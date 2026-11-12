@@ -1,9 +1,16 @@
 name: Sync upstream
 
 # GitHub 不提供 fork 自动同步，只能自己定时调 merge-upstream。
-# fork 自带 github.token 在 contents: write 下即可调用（已实测 HTTP 200），
-# 不需要 PAT。上游前进时快进；fork 有独有提交时它自己建 merge commit；
-# 只有真冲突才 409 —— 那时失败退出等人处理，不 force 推。
+#
+# 实测（临时双仓库跑过）：
+#   - fork 落后且无冲突        → 200 merge_type=fast-forward
+#   - fork 有独有提交但无冲突  → 200 merge_type=merge（自动建 merge commit）
+#   - 两边改同一处            → 409，接口不自动解决
+#
+# 本仓库自己带着这个 workflow，所以 fork 永远有独有提交，
+# 实际走的是 merge 分支。只有真冲突才 409 —— 那时失败退出等人处理，不 force 推。
+#
+# 令牌用 fork 自带的 github.token，permissions: contents: write 即可，不需要 PAT。
 on:
   schedule:
     - cron: '0 */6 * * *'
@@ -20,7 +27,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Fast-forward from upstream
+      - name: Sync from upstream
         env:
           REPO: ${{ github.repository }}
           TOKEN: ${{ github.token }}
@@ -40,9 +47,9 @@ jobs:
 
           if [ "$code" != "200" ]; then
             if [ "$code" = "409" ]; then
-              echo "::error::上游改动与 fork 冲突，自动合并失败。需人工处理后才会恢复。"
+              echo "::error::上游改动与本仓库冲突，接口无法自动解决。需人工合并一次，之后定时同步自动恢复。"
             else
-              echo "::error::merge-upstream 返回 $code（401=令牌失效 403=权限不足 404=仓库或分支不对）"
+              echo "::error::merge-upstream 返回 $code（401=令牌失效 403=权限不足 404=仓库或分支不对 422=其他原因）"
             fi
             exit 1
           fi
