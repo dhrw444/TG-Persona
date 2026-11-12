@@ -1,7 +1,8 @@
 name: Sync upstream
 
 # GitHub 不提供 fork 自动同步，只能自己定时调 merge-upstream。
-# 只做快进：fork 有独有提交时接口返回 409，这里直接失败而不是强推。
+# 上游前进时接口返回 fast-forward；fork 有独有提交时它自己建 merge commit。
+# 只有真冲突才 409 —— 那时失败退出，等人处理，不 force 推。
 on:
   schedule:
     - cron: '0 */6 * * *'
@@ -25,7 +26,7 @@ jobs:
         run: |
           set -eu
           if [ -z "${SYNC_TOKEN:-}" ]; then
-            echo "缺少 secrets.SYNC_TOKEN：fork 的 GITHUB_TOKEN 无权调用 merge-upstream，必须用 PAT。" >&2
+            echo "::error::缺少 secrets.SYNC_TOKEN。fork 的 GITHUB_TOKEN 无权调用 merge-upstream，必须用 PAT（Contents: write）。"
             exit 1
           fi
 
@@ -42,9 +43,9 @@ jobs:
 
           if [ "$code" != "200" ]; then
             if [ "$code" = "409" ]; then
-              echo "::error::fork 有上游没有的提交，无法快进。需人工 rebase/merge。"
+              echo "::error::上游改动与 fork 冲突，自动合并失败。需人工处理后再启用定时同步。"
             else
-              echo "::error::merge-upstream 返回 $code"
+              echo "::error::merge-upstream 返回 $code（401=令牌失效 403=权限不足 404=仓库或分支不对）"
             fi
             exit 1
           fi
