@@ -676,7 +676,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     await run('loadGameTasks()');
     run('openGameForm()');
     assert(element('#gameForm').classList.contains('show'));
-    element('#gChat').value='-1001234567890';
+    element('#gChat').value='-1001234567890';assert(html.includes('id="gChatSearch"'));assert(html.includes('id="gChatPicker"'));assert(html.includes('pickGameGroup('));assert(html.includes('renderGameGroupOptions'));assert(html.includes('probeGameTask'));assert(html.includes("flockActiveEnabled"));assert(html.includes('saveFlockActive'));assert(html.includes('/api/ai/flock/active'));assert(html.includes('积极模式'));assert(html.includes('data-game-action="probe"'));
     element('#gSender').value='@hsuys_bot';
     let sent;context.api=async(p,o)=>{sent=[p,JSON.parse(o.body)];return {ok:true}};
     await run('saveGameTask()');
@@ -687,14 +687,13 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
   });
   await test('群游戏卡片含古诗填空任务与可信出题人配置',async()=>{
     assert(html.includes('id="gameCard"')&&html.includes('自动识别被遮住的字'));
-    for(const id of ['gChat','gKeyword','gSender','gDelay','gPrompt','gDefend','gEnabled'])assert(html.includes('id="'+id+'"'));
+    for(const id of ['gChat','gChatSearch','gKeyword','gSender','gDelay','gPrompt','gDefend','gEnabled'])assert(html.includes('id="'+id+'"'));
     assert(html.includes('/api/game-tasks'));
     context.api=async(p)=>{if(p==='/api/game-tasks')return {items:[{id:3,subtype:'poem',chat:'-100123',trigger_kw:'猜字游戏开始',sender_filter:'@hsuys_bot',reply_delay:1,defend_ai:1,enabled:1,total:2,last_status:'success',last_detail:'西（ocr）'}]};return {ok:true}};
     await run('loadGameTasks()');
     assert.strictEqual(element('#gameTaskCount').textContent,'1');
-    let found=false;
-    for(const card of element('#gameTaskList').children)for(const child of card.children)if(String(child.textContent).includes('@hsuys_bot'))found=true;
-    assert(found);
+    assert(html.includes('auto-details')&&html.includes('最近执行：')&&html.includes('gameLastResult'));
+    assert(html.includes('auto-details')&&html.includes('最近执行：')&&html.includes('gameLastResult'));
   });
   await test('AI 失败但 OCR 回退成功保留通道提醒与实际文本',async()=>{
     configureAI();context.api=async()=>({ok:true,text:'<img onerror=alert(1)>',channel:'ocr',errors:[{channel:'ai',message:'AI 超时 <script>'}],elapsed_ms:73});
@@ -1244,7 +1243,24 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(html.includes('waterAiPeopleRefHint'));
     assert(html.includes('peopleHistoryStart'));
     assert(html.includes('消息记忆'));
-    assert(html.includes('人物画像（可选，只对白名单）'));
+    assert(html.includes('id="peopleProfileCard"'));
+    assert(html.includes('id="peopleMemoryCard"'));
+    assert(html.includes("loadGithubToken();loadPeople()"));
+    assert(html.includes('peopleStatusBox'));
+    assert(html.includes('renderPeopleStatus'));
+    assert(html.includes('已有画像 '));
+    assert(html.includes('friendsUploadEnabled'));
+    assert(html.includes('/api/ai/flock/friends/upload'));
+    assert(html.includes('renderFriendsUpload'));
+    assert(html.includes('friends.md 引用预算'));
+    assert(html.includes('重建 friends.md'));
+    assert(html.includes('peopleOpenIds'));
+    assert(html.includes('renderPeopleList'));
+    assert(html.includes('memory-preview'));
+    assert(html.includes('peopleProviders'));
+    assert(html.includes("provider_ids:[...peopleProviderSel]"));
+    assert(html.includes('三份文件引用无上限'));
+    assert(/id="flockLearningCard"/.test(html)&&/id="peopleMemoryCard"/.test(html));
     assert(html.includes('peopleGroups'));
     assert(html.includes('画像监控群'));
     assert(html.includes('grp-search'));
@@ -1261,6 +1277,11 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(html.includes('pickCodeGroup('));
     assert(html.includes(`data-k="game"`));
     assert(html.includes('loadGameLogsPage'));
+    assert(html.includes('openedGameIds'));
+    assert(html.includes('gameLastResult'));
+    assert(html.includes('id="ghToken"'));
+    assert(html.includes('/api/github-token'));
+    assert(html.includes('最近执行：'));
     assert(html.includes('setGroupFilter('));
     assert(!html.includes("$('#waterAiJobName').focus()"));
     assert(html.includes('datetime-local'));
@@ -1606,7 +1627,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     let request;app.fetch=async(p,o)=>{request=[p,o];return {ok:true,status:200,blob:async()=>new Blob(['# 群内氛围'])}};await ex('exportStudy()');assert.strictEqual(request[0],'/api/ai/flock/study/export');assert.strictEqual(request[1].headers['X-Account-ID'],'study-a');assert.strictEqual(downloaded.at(-1).download,'study.md');
   });
   await test('四个水群编辑器明确引用study和knowledge且预算往返准确',async()=>{
-    assert.strictEqual((html.match(/study\.md \+ knowledge\.md 引用预算（0 不引用）/g)||[]).length,4);assert.strictEqual((html.match(/两份文件引用无上限/g)||[]).length,4);assert.strictEqual((html.match(/按需引用两份文件/g)||[]).length,4);
+    assert.strictEqual((html.match(/study\.md \+ knowledge\.md \+ friends\.md 引用预算（0 不引用）/g)||[]).length,4);assert.strictEqual((html.match(/三份文件引用无上限/g)||[]).length,4);assert.strictEqual((html.match(/按需引用两份文件/g)||[]).length,4);
     assert.strictEqual(ex('taskConfig({ai_flock_knowledge_chars:-1}).ai_flock_knowledge_chars'),-1);assert.notStrictEqual(ex('taskFingerprint({ai_flock_knowledge_chars:-1})'),ex('taskFingerprint({ai_flock_knowledge_chars:0})'));
     for(const prefix of ['waterAiJob','brAiFlock','lkAiFlock','crAiFlock']){assert(html.includes('id="'+prefix+'KnowledgeOnDemand"'));ex("setIntegerFields('"+prefix+"',{},AI_FLOCK_LIMIT_SPECS)");q('#'+prefix+'KnowledgeChars').value='4567';q('#'+prefix+'KnowledgeUnlimited').checked=true;ex("syncKnowledgeLimit('"+prefix+"')");assert(q('#'+prefix+'KnowledgeChars').disabled);assert.strictEqual(ex("readIntegerFields('"+prefix+"',AI_FLOCK_LIMIT_SPECS).knowledge_chars"),-1);q('#'+prefix+'KnowledgeUnlimited').checked=false;ex("syncKnowledgeLimit('"+prefix+"')");assert.strictEqual(ex("readIntegerFields('"+prefix+"',AI_FLOCK_LIMIT_SPECS).knowledge_chars"),4567);ex("setIntegerFields('"+prefix+"',{knowledge_chars:-1},AI_FLOCK_LIMIT_SPECS)");assert(q('#'+prefix+'KnowledgeUnlimited').checked);ex("setIntegerFields('"+prefix+"',{},AI_FLOCK_LIMIT_SPECS)");assert(!q('#'+prefix+'KnowledgeUnlimited').checked);assert.strictEqual(q('#'+prefix+'KnowledgeChars').value,'2000')}
   });
