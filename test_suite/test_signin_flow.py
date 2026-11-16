@@ -1,6 +1,6 @@
 """消息时序/延迟回归，只用假消息与假识别器，不读取真实验证码或连接 TG。"""
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -18,7 +18,7 @@ class SigninFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.b=load_backend()
         self.b['now_local']=lambda: datetime(2026,10,30,9,0,tzinfo=timezone.utc)
-        self.events=[];self.phase='before';self.fetch_count=0;self.answer_result='签到成功';self.deliver=True;self.image_mode=False;self.image_click=False
+        self.events=[];self.phase='before';self.fetch_count=0;self.answer_result='签到成功';self.deliver=True;self.image_mode=False;self.image_click=False;self.button_popup=''
         outer=self
         async def send(ent,text):
             outer.events.append(('send',text))
@@ -31,6 +31,7 @@ class SigninFlowTests(unittest.IsolatedAsyncioTestCase):
                 index=outer.fetch_count
                 async def click():
                     outer.events.append(('click',index));outer.phase='clicked'
+                    return SimpleNamespace(message=outer.button_popup) if outer.button_popup else None
                 button=SimpleNamespace(text='签到',click=AsyncMock(side_effect=click))
                 return [photo_message(101,'欢迎使用测试机器人，请选择功能',1,buttons=[[button]])]
             if outer.phase=='prompt':
@@ -88,12 +89,70 @@ class SigninFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([s for kind,s in self.events if kind=='sleep'][:2],[0.0,0.0])
         self.assertEqual(self.row(aid)['last_status'],'success')
 
+    async def test_already_signed_popup_is_success_without_new_reply(self):
+        self.button_popup='今日已签到，请勿重复签到'
+        self.deliver=False
+        aid=await self.create(signin_captcha=0,signin_recognition_mode='none')
+        await self.run_flow(aid)
+        self.assertEqual(self.row(aid)['last_status'],'success')
+        self.assertEqual(self.b['client'].send_message.await_count,1)
+        detail=self.b['conn'].execute('SELECT detail FROM hits ORDER BY id DESC').fetchone()[0]
+        self.assertIn('今日已签到',detail);self.assertIn('按钮弹窗已确认签到结果',detail)
+
+    async def test_custom_popup_success_keyword(self):
+        self.button_popup='本日打卡済み：茶香已领取'
+        self.deliver=False
+        aid=await self.create(signin_captcha=0,signin_recognition_mode='none',popup_success_kw='本日打卡済み')
+        await self.run_flow(aid)
+        self.assertEqual(self.row(aid)['last_status'],'success')
+        self.assertEqual(self.row(aid)['popup_success_kw'],'本日打卡済み')
+
     async def test_selected_ai_providers_reach_captcha_recognition(self):
         selected='0123456789abcdef,fedcba9876543210'
         aid=await self.create(ai_provider_ids=selected)
         await self.run_flow(aid)
         self.assertEqual(self.row(aid)['ai_provider_ids'],selected)
         self.assertEqual(self.b['recognize_image_text'].call_args.kwargs['provider_ids'],selected)
+
+    async def test_ai_mode_finds_button_on_message_edited_after_command(self):
+        provider = (await self.b['create_ai_provider'](self.b['AIProviderInput'](
+            note='按钮 AI', base='https://example.invalid/v1', key='fixture-key', model='m')))['provider']['id']
+        phase = {'value':'before'}
+        other = SimpleNamespace(text='用户功能', click=AsyncMock())
+        wanted = SimpleNamespace(text='🎯 签到', click=AsyncMock(side_effect=lambda:phase.update(value='result')))
+        before = message(90, '旧菜单', buttons=[]);before.edit_date=None;before.photo=None;before.document=None
+        edited = message(90, '请选择功能', buttons=[[other,wanted]]);edited.edit_date='now';edited.photo=None;edited.document=None
+        success = message(101, '签到成功');success.edit_date=None;success.photo=None;success.document=None
+        async def send(_entity, _text, **_kwargs):phase['value']='edited';return SimpleNamespace(id=100)
+        async def get(_entity, **_kwargs):return [before] if phase['value']=='before' else [edited] if phase['value']=='edited' else [success]
+        self.b['client']=SimpleNamespace(send_message=AsyncMock(side_effect=send),get_messages=AsyncMock(side_effect=get))
+        self.b['_call_ai_any']=AsyncMock(return_value='2')
+        aid=await self.create(signin_captcha=0,signin_recognition_mode='none',button_mode='ai',ai_provider_ids=provider,
+                              btn_text='签到',command_delay=0,button_delay=0)
+        with patch.object(asyncio,'sleep',new=AsyncMock()):
+            self.assertTrue(await self.b['run_signin'](self.row(aid)))
+        wanted.click.assert_awaited_once();other.click.assert_not_awaited()
+        self.b['_call_ai_any'].assert_awaited_once()
+        detail=self.b['conn'].execute('SELECT detail FROM hits ORDER BY id DESC').fetchone()[0]
+        self.assertIn('"button_mode": "ai"',detail)
+
+    async def test_fallback_mode_uses_latest_unchanged_menu_for_repeat_start(self):
+        provider = (await self.b['create_ai_provider'](self.b['AIProviderInput'](
+            note='按钮 AI', base='https://example.invalid/v1', key='fixture-key', model='m')))['provider']['id']
+        wanted = SimpleNamespace(text='🎯 签到', click=AsyncMock(return_value=SimpleNamespace(message='今日已签到，请勿重复签到')))
+        old_menu = message(90, '请选择功能', buttons=[[wanted]])
+        old_menu.edit_date=None;old_menu.photo=None;old_menu.document=None
+        self.b['client']=SimpleNamespace(
+            send_message=AsyncMock(return_value=SimpleNamespace(id=100)),
+            get_messages=AsyncMock(return_value=[old_menu]))
+        self.b['_call_ai_any']=AsyncMock(side_effect=AssertionError('fallback script match must not call AI'))
+        aid=await self.create(signin_captcha=0,signin_recognition_mode='none',button_mode='fallback',
+                              ai_provider_ids=provider,btn_text='签到',command_delay=0,button_delay=0)
+        with patch.object(asyncio,'sleep',new=AsyncMock()):
+            self.assertTrue(await self.b['run_signin'](self.row(aid)))
+        wanted.click.assert_awaited_once();self.b['_call_ai_any'].assert_not_awaited()
+        detail=self.b['conn'].execute('SELECT detail FROM hits ORDER BY id DESC').fetchone()[0]
+        self.assertIn('"button_source": "latest_history"',detail);self.assertIn('今日已签到',detail)
 
     async def test_image_mode_uses_custom_prompt_selected_apis_and_sends_object_name(self):
         self.image_mode=True;selected='0123456789abcdef';prompt='识别核心物体，只输出名称'
@@ -249,6 +308,9 @@ class SigninFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((text,status),('签到成功','success'))
 
     async def test_unconfirmed_stops_same_day_scheduler_even_retries_change(self):
+        # 固定“今天”和当前小时，否则调度窗口会跟着真实时钟漂移，窗口内运行时这条用例就翻车
+        self.b['_beijing_now']=lambda: datetime(2026,10,30,17,0,tzinfo=timezone(timedelta(hours=8)))
+        self.b['now_local']=lambda: datetime(2026,10,30,17,0,tzinfo=timezone(timedelta(hours=8)))
         aid=await self.create(retries=1)
         db=self.b['conn'];db.execute("UPDATE automations SET retry_day='2026-10-30',retry_count=1,last_status='unconfirmed',next_run_at=0 WHERE id=?",(aid,));db.commit()
         self.b['_signin_tick']();self.assertNotIn(aid,self.b['_auto_running'])

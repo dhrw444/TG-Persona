@@ -35,9 +35,9 @@ def load_model_callbacks():
         hour, minute = map(int, value.split(":"))
         return hour * 60 + minute
     source = ast.parse((ROOT / "main.py").read_text())
-    wanted = {"AutoIn", "_valid_auto", "_auto_vals", "_csv", "_budget_value", "_valid_provider_ids", "_valid_reaction"}
+    wanted = {"AutoIn", "_valid_auto", "_auto_vals", "_callback_buttons", "_red_envelope_button", "_redpacket_result", "_csv", "_budget_value", "_valid_provider_ids", "_valid_reaction"}
     assignments = [node for node in source.body if isinstance(node, ast.Assign)
-                   and any(isinstance(target, ast.Name) and target.id in ("_AUTO_COLS", "DEFAULT_SIGNIN_IMAGE_PROMPT", "DEFAULT_AI_FLOCK_PROMPT", "DEFAULT_REGISTRATION_AI_FLOCK_PROMPT", "AI_FLOCK_CONTEXT_MESSAGES", "AI_FLOCK_MESSAGE_CHARS", "AI_FLOCK_SKILL_CHARS", "AI_FLOCK_MAX_TOKENS", "AI_FLOCK_BUDGET_RANGES") for target in node.targets)]
+                   and any(isinstance(target, ast.Name) and target.id in ("_AUTO_COLS", "DEFAULT_SIGNIN_IMAGE_PROMPT", "DEFAULT_AI_FLOCK_PROMPT", "DEFAULT_REGISTRATION_AI_FLOCK_PROMPT", "AI_FLOCK_CONTEXT_MESSAGES", "AI_FLOCK_MESSAGE_CHARS", "AI_FLOCK_SKILL_CHARS", "AI_FLOCK_MAX_TOKENS", "AI_FLOCK_KNOWLEDGE_CHARS", "KNOWLEDGE_MAX_BYTES", "AI_FLOCK_BUDGET_RANGES") for target in node.targets)]
     nodes = assignments + [node for node in source.body if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in wanted]
     namespace = {"BaseModel": BaseModel, "Field": Field, "HTTPException": HTTPException,
                    "math": math, "json": json, "re": re, "_win_minutes": win_minutes,
@@ -160,6 +160,38 @@ class TaskManagementTests(unittest.TestCase):
         return tuple(tuple(self.dbs[account].execute("SELECT * FROM " + table + " ORDER BY 1"))
                      for table in ("automations", "rules", "watched_groups", "settings", "hits"))
 
+    def test_redpacket_ignores_button_text_and_uses_data(self):
+        class Btn:
+            def __init__(self, text, data=None, url=None):
+                self.text, self.data, self.url = text, data, url
+        pick = FIXTURE["_red_envelope_button"]
+        # 同名红包在不同群文案不同，但 data 前缀一致，仍然要认出
+        for label, data in (("👆🏻 好運連連", b"red_envelope-DLXli"),
+                            ("🖕 吉运连连", b"red_envelope-4s9B3"),
+                            ("👆 好運連連", b"red_envelope-qAcOs")):
+            self.assertEqual(pick([[Btn(label, data=data)]]).text, label)
+        self.assertIsNone(pick([[Btn("1 🎻", data=b"play7de19866")]]))
+        self.assertIsNone(pick([[Btn("点击领奖", url="https://evil.example")]]))
+
+    def test_redpacket_popup_result_parsing(self):
+        parse = FIXTURE["_redpacket_result"]
+        self.assertEqual(parse("🧧恭喜，你领取到了\n𝙈𝙖𝙠𝙠𝙖 ℙ𝕒𝕜𝕜𝕒 の 5积分"), "success")
+        self.assertEqual(parse("ʕ•̫͡•ʔ 你已经领取过红包了。不许贪吃"), "repeat")
+        self.assertEqual(parse("/(ㄒoㄒ)/~~ \n\n来晚了，红包已经被抢光啦。"), "expired")
+        self.assertEqual(parse(""), "unknown")
+
+    def test_redpacket_only_clicks_callback_buttons(self):
+        class Btn:
+            def __init__(self, text, data=None, url=None):
+                self.text, self.data, self.url = text, data, url
+        safe = FIXTURE["_callback_buttons"]([
+            [Btn("👆 好運連連", data=b"claim"), Btn("领取记录", url="https://evil.example/steal")],
+            [Btn("查看排行榜", url="tg://resolve?domain=scam")],
+        ])
+        self.assertEqual([[b.text for b in row] for row in safe], [["👆 好運連連"]])
+        self.assertEqual(FIXTURE["_callback_buttons"]([[Btn("开", url="https://x.y")]]), [])
+        self.assertEqual(FIXTURE["_callback_buttons"](None), [])
+
     def test_batch_preview_is_read_only(self):
         aid = self.add()
         before = self.snapshot()
@@ -227,15 +259,16 @@ class TaskManagementTests(unittest.TestCase):
         for task_type in ('link_register','button_register','code_register'):
             patch=dict(type=task_type,name=task_type,btn_text='注册',keywords='注册状态',success_kw='成功',
                        ai_flock_provider_ids='0123456789abcdef',ai_flock_reaction='👍',
-                       ai_flock_context_messages=9,ai_flock_message_chars=240,
-                       ai_flock_skill_chars=4500,ai_flock_max_tokens=700)
+                       ai_flock_context_messages=50,ai_flock_message_chars=2000,
+                       ai_flock_skill_chars=200000,ai_flock_max_tokens=8192,ai_flock_knowledge_chars=-1,
+                       ai_flock_knowledge_on_demand=1)
             if task_type=='button_register':patch.update(announcement_kw='开注',announcement_button='点击注册')
             if task_type=='code_register':patch.update(groups='-100123',target='@fixed_bot')
             self.add(**patch)
         exported=self.client.get('/api/tasks/export').json();imported=self.imp(exported,account='other',preview=False)
         self.assertEqual(imported.status_code,200,imported.text)
-        rows=self.dbs['other'].execute('SELECT type,ai_flock_provider_ids,ai_flock_reaction,ai_flock_context_messages,ai_flock_message_chars,ai_flock_skill_chars,ai_flock_max_tokens FROM automations ORDER BY id').fetchall()
-        self.assertEqual(rows,[(kind,'0123456789abcdef','👍',9,240,4500,700) for kind in ('link_register','button_register','code_register')])
+        rows=self.dbs['other'].execute('SELECT type,ai_flock_provider_ids,ai_flock_reaction,ai_flock_context_messages,ai_flock_message_chars,ai_flock_skill_chars,ai_flock_max_tokens,ai_flock_knowledge_chars,ai_flock_knowledge_on_demand FROM automations ORDER BY id').fetchall()
+        self.assertEqual(rows,[(kind,'0123456789abcdef','👍',50,2000,200000,8192,-1,1) for kind in ('link_register','button_register','code_register')])
 
     def test_batch_default_apply_preserves_success(self):
         aid = self.add()
@@ -271,20 +304,24 @@ class TaskManagementTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
         self.assertFalse(self.resets)
 
-    def test_mixed_types_skip_ineffective_fields(self):
+    def test_batch_only_touches_signin_tasks(self):
         signin = self.add()
         custom = self.add(type="custom", custom_steps='[{"t":"send","to":"target","text":"/start","reply":false}]')
         keepalive = self.add(type="keepalive", reply_text="hello", poll_interval=120)
-        grabcodes = self.add(type="grabcodes", reply_text="{code}", poll_interval=20)
-        response = self.batch([signin, custom, keepalive, grabcodes], patch={"win_start": "09:00", "poll_interval": 300, "button_delay": 0})
+        before = {aid: self.row(aid) for aid in (custom, keepalive)}
+        response = self.batch([signin, custom, keepalive], patch={"win_start": "09:00", "poll_interval": 300})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["counts"]["updated"], 3)
-        self.assertEqual(len(response.json()["skipped"]), 4)
+        data = response.json()
+        self.assertEqual(data["counts"]["updated"], 1)
+        self.assertEqual([row["id"] for row in data["updated"]], [signin])
+        skipped_ids = {row["id"] for row in data["skipped"]}
+        self.assertIn(custom, skipped_ids)
+        self.assertIn(keepalive, skipped_ids)
+        self.assertTrue(any("只对签到任务" in str(row.get("reason", "")) for row in data["skipped"]))
+        for aid in (custom, keepalive):
+            self.assertEqual(self.row(aid)["poll_interval"], before[aid]["poll_interval"])
         self.assertEqual(self.row(custom)["win_start"], "08:00")
-        self.assertEqual(self.row(custom)["button_delay"], 2)
-        self.assertEqual(self.row(keepalive)["poll_interval"], 300)
-        self.assertEqual(self.row(grabcodes)["poll_interval"], 300)
-        self.assertNotIn(("default", custom, False), self.resets)
+        self.assertEqual(self.row(signin)["win_start"], "09:00")
 
     def test_all_inapplicable_is_noop(self):
         aid = self.add(type="custom", custom_steps='[{"t":"send","to":"target","text":"hi","reply":false}]')
@@ -596,7 +633,7 @@ class TaskManagementTests(unittest.TestCase):
             bad = self.backup([{"name": "bad", "type": "custom", "target": "@fake", "custom_steps": json.dumps(steps)}])
             self.assertEqual(self.imp(bad).status_code, 422)
 
-    def test_custom_credentials_stay_disabled_on_batch_and_import_and_are_deleted(self):
+    def test_batch_skips_custom_tasks_with_credentials(self):
         credential_steps = json.dumps([{"t":"send","to":"target","text":"{credential.secret}"}])
         aid = self.add(type="custom", enabled=0, custom_steps=credential_steps)
         self.dbs["default"].execute("INSERT INTO settings VALUES(?,?)", ("link_cred_" + str(aid), "PRIVATE"))
@@ -607,7 +644,9 @@ class TaskManagementTests(unittest.TestCase):
         self.assertEqual(self.row(aid)["enabled"], 0)
         deleted = self.batch([aid], action="delete")
         self.assertEqual(deleted.status_code, 200, deleted.text)
-        self.assertIsNone(self.dbs["default"].execute("SELECT value FROM settings WHERE key=?", ("link_cred_" + str(aid),)).fetchone())
+        self.assertEqual(deleted.json()["updated_count"], 0)
+        self.assertIsNotNone(self.dbs["default"].execute("SELECT value FROM settings WHERE key=?", ("link_cred_" + str(aid),)).fetchone())
+        self.assertIsNotNone(self.row(aid))
 
         task = {"name":"credential import","type":"custom","target":"@fake","enabled":1,
                 "custom_steps":credential_steps}

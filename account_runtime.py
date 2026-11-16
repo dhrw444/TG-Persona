@@ -48,7 +48,7 @@ def secure_directory(path, create=False):
 
 def secure_files(directory):
     for name in ("config.db", "config.db-wal", "config.db-shm", "config.db-journal",
-                 "tg.session", "tg.session-journal", "tg.session-wal", "tg.session-shm", "avatar.jpg", "skill.md"):
+                 "tg.session", "tg.session-journal", "tg.session-wal", "tg.session-shm", "avatar.jpg", "skill.md", "knowledge.md", "study.md"):
         path = directory / name
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise AccountError(400, "账号文件不允许符号链接或非普通文件")
@@ -72,6 +72,49 @@ def open_database(path):
     return db
 
 
+class AIRequestScheduler:
+    """One learning request, with a foreground slot and priority between requests."""
+    def __init__(self):
+        self.condition = asyncio.Condition()
+        self.waiting = []
+        self.active = []
+        self.foreground_streak = 0
+
+    @property
+    def active_learning(self):
+        return "learning" in self.active
+
+    def status(self):
+        return {"active": len(self.active), "active_learning": self.active_learning,
+                "waiting_learning": sum(item[1] == "learning" for item in self.waiting),
+                "waiting_foreground": sum(item[1] != "learning" for item in self.waiting)}
+
+    @asynccontextmanager
+    async def slot(self, feature, serialized=False):
+        ticket = (object(), feature)
+        async with self.condition:
+            self.waiting.append(ticket)
+            try:
+                while True:
+                    eligible = [item for item in self.waiting if item[1] != "learning" or not self.active_learning]
+                    learning_turn = self.foreground_streak >= 3
+                    eligible.sort(key=lambda item: (item[1] == "learning") != learning_turn)
+                    if (eligible and eligible[0] == ticket and len(self.active) < (1 if serialized else 2)):
+                        break
+                    await self.condition.wait()
+                self.active.append(feature)
+                self.foreground_streak = 0 if feature == "learning" else self.foreground_streak + 1
+            finally:
+                self.waiting.remove(ticket)
+                self.condition.notify_all()
+        try:
+            yield
+        finally:
+            async with self.condition:
+                self.active.remove(feature)
+                self.condition.notify_all()
+
+
 @dataclass(eq=False)
 class AccountRuntime:
     id: str
@@ -93,6 +136,11 @@ class AccountRuntime:
     custom_trigger_task: object = None
     ai_flock_busy_groups: set = field(default_factory=set)
     ai_flock_last: dict = field(default_factory=dict)
+    ai_flock_status: dict = field(default_factory=dict)
+    ai_flock_tests: dict = field(default_factory=dict)
+    ai_flock_provider_retry_at: dict = field(default_factory=dict)
+    ai_flock_frequency: dict = field(default_factory=dict)
+    ai_knowledge_last: dict = field(default_factory=dict)
     ai_flock_blocked: dict = field(default_factory=dict)
     ai_flock_waiting: int = 0
     generated_message_ids: set = field(default_factory=set)
@@ -110,12 +158,21 @@ class AccountRuntime:
     auto_queue_wakeup: object = None
     watcher_task: object = None
     signin_task: object = None
+    web_signin_task: object = None
     scheduled_task: object = None
     poll_task: object = None
     keepalive_task: object = None
     housekeeping_task: object = None
+    durable_task: object = None
+    summary_task: object = None
     health_task: object = None
     ai_learning_task: object = None
+    ai_learning_worker_task: object = None
+    ai_learning_busy: bool = False
+    ai_learning_next_at: int = 0
+    ai_skill_upload_busy: bool = False
+    _ai_budget_lock: object = None
+    _ai_scheduler: object = None
     session_alerted: bool = False
     handler_registered: bool = False
     closing: bool = False
@@ -127,8 +184,15 @@ class AccountRuntime:
     _requests_idle: object = None
     _ai_flock_lock: object = None
     _skill_lock: object = None
+    _knowledge_lock: object = None
     request_count: int = 0
     lock_owner: object = None
+
+    @property
+    def ai_scheduler(self):
+        if self._ai_scheduler is None:
+            self._ai_scheduler = AIRequestScheduler()
+        return self._ai_scheduler
 
     @property
     def lifecycle_lock(self):
@@ -158,6 +222,19 @@ class AccountRuntime:
         return self.directory / "skill.md"
 
     @property
+    def knowledge_file(self):
+        return self.directory / "knowledge.md"
+
+    @property
+    def knowledge_auto_file(self):
+        # AI 自己攒的待验证知识，和号主手写的 knowledge.md 分开存，互不覆盖。
+        return self.directory / "knowledge-auto.md"
+
+    @property
+    def study_file(self):
+        return self.directory / "study.md"
+
+    @property
     def ai_flock_lock(self):
         if self._ai_flock_lock is None:
             self._ai_flock_lock = asyncio.Lock()
@@ -168,6 +245,18 @@ class AccountRuntime:
         if self._skill_lock is None:
             self._skill_lock = asyncio.Lock()
         return self._skill_lock
+
+    @property
+    def knowledge_lock(self):
+        if self._knowledge_lock is None:
+            self._knowledge_lock = asyncio.Lock()
+        return self._knowledge_lock
+
+    @property
+    def ai_budget_lock(self):
+        if self._ai_budget_lock is None:
+            self._ai_budget_lock = asyncio.Lock()
+        return self._ai_budget_lock
 
     def check_live(self):
         if self.closing or self.closed or self.stopping:
@@ -278,7 +367,7 @@ class AccountRuntime:
             self.client = None
             self.handler_registered = False
             self.clear_auto_queue()
-            for name in ("watcher_task", "signin_task", "scheduled_task", "poll_task", "keepalive_task", "housekeeping_task", "health_task", "ai_learning_task"):
+            for name in ("watcher_task", "signin_task", "scheduled_task", "poll_task", "keepalive_task", "housekeeping_task", "health_task", "ai_learning_task", "ai_learning_worker_task", "durable_task", "summary_task"):
                 setattr(self, name, None)
             self.tg_phone = ""
             self.tg_state.update(phase="idle", phone="", me=None, err=None, health_error=None)
@@ -291,11 +380,19 @@ class AccountRuntime:
             self.ai_flock_busy = False
             self.ai_flock_busy_groups.clear()
             self.ai_flock_last.clear()
+            self.ai_flock_status.clear()
+            self.ai_flock_tests.clear()
+            self.ai_flock_provider_retry_at.clear()
+            self.ai_flock_frequency.clear()
+            self.ai_knowledge_last.clear()
             self.ai_flock_blocked.clear()
             self.ai_flock_waiting = 0
             self.generated_message_ids.clear()
             self._ai_flock_lock = None
             self._skill_lock = None
+            self._knowledge_lock = None
+            self.ai_learning_busy = False
+            self.ai_learning_next_at = 0
             self.custom_trigger_pending.clear()
             self.custom_trigger_task = None
             self.session_alerted = False

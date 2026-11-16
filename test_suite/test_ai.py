@@ -208,6 +208,59 @@ class AITest(unittest.IsolatedAsyncioTestCase):
         factory.assert_called_once_with(show_ad=False);self.assertEqual(classifier.call_count,2)
 
 
+    async def test_reasoning_effort_maps_to_openai_and_glm_payloads(self):
+        call = self.b['_call_ai']
+        async def payload_for(cfg):
+            self.calls.clear()
+            await call(cfg, 'x')
+            return self.calls[-1][1]['json']
+        base = {'base': 'https://example.invalid/v1', 'key': 'dummy-key'}
+        openai_high = await payload_for({**base, 'model': 'gpt-x', 'reasoning_effort': 'high'})
+        self.assertEqual(openai_high['reasoning_effort'], 'high')
+        self.assertNotIn('thinking', openai_high)
+        for effort in ('xhigh', 'max', 'medium', 'low', 'none'):
+            payload = await payload_for({**base, 'model': 'gpt-x', 'reasoning_effort': effort})
+            self.assertEqual(payload['reasoning_effort'], effort)
+        self.assertNotIn('reasoning_effort', await payload_for({**base, 'model': 'gpt-x', 'reasoning_effort': 'default'}))
+        glm_low = await payload_for({**base, 'model': 'glm-4.6', 'reasoning_effort': 'low'})
+        self.assertEqual((glm_low['thinking'], glm_low['reasoning_effort']), ({'type': 'enabled'}, 'low'))
+        glm_off = await payload_for({**base, 'model': 'glm-4.6', 'reasoning_effort': 'none'})
+        self.assertEqual(glm_off['thinking'], {'type': 'disabled'})
+        self.assertNotIn('reasoning_effort', glm_off)
+        with self.assertRaisesRegex(ValueError, 'GLM-5.3'):
+            await payload_for({**base, 'model': 'glm-5.3-flash', 'reasoning_effort': 'medium'})
+        with self.assertRaisesRegex(ValueError, '思考强度'):
+            await payload_for({**base, 'model': 'gpt-x', 'reasoning_effort': 'turbo'})
+
+    async def test_client_profiles_inject_exact_headers_and_none_is_unchanged(self):
+        call = self.b['_call_ai']
+        async def headers_for(cfg):
+            self.calls.clear()
+            await call(cfg, 'x')
+            return self.calls[-1][1]['headers']
+        base = {'base': 'https://relay.invalid/v1', 'key': 'dummy-key', 'model': 'm'}
+        self.assertEqual(await headers_for({**base, 'client_profile': 'none'}),
+                         {'Authorization': 'Bearer dummy-key'})
+        sid = 'ses_' + 'a' * 64
+        oc = await headers_for({**base, 'client_profile': 'opencode', 'client_session_id': sid})
+        self.assertEqual(oc['User-Agent'], 'opencode/1.19.5')
+        self.assertEqual((oc['x-opencode-session-id'], oc['x-session-affinity'], oc['X-Session-Id']),
+                         (sid, sid, sid))
+        codex = await headers_for({**base, 'client_profile': 'codex'})
+        self.assertTrue(codex['User-Agent'].startswith('codex_cli_rs/'))
+        self.assertEqual((codex['originator'], codex['OpenAI-Beta']),
+                         ('codex_cli_rs', 'responses=experimental'))
+        self.assertNotIn('chatgpt-account-id', codex)
+        claude = await headers_for({**base, 'client_profile': 'claude'})
+        self.assertEqual(claude['User-Agent'], 'claude-cli/2.0.0 (external, cli)')
+        self.assertEqual((claude['x-app'], claude['anthropic-version']), ('cli', '2023-06-01'))
+        self.assertEqual(claude['Accept'], 'application/json')
+        for headers in (oc, codex, claude):
+            self.assertEqual(headers['Authorization'], 'Bearer dummy-key')
+            self.assertNotIn('dummy-key', str({k: v for k, v in headers.items() if k != 'Authorization'}))
+        with self.assertRaisesRegex(ValueError, '客户端伪装'):
+            await headers_for({**base, 'client_profile': 'cursor'})
+
     async def test_glm53_assistant_mode_uses_low_reasoning_without_changing_image_calls(self):
         self.b['_call_ai'] = self.b['_call_ai']
         self.b['httpx'] = self.b['httpx']
@@ -222,6 +275,87 @@ class AITest(unittest.IsolatedAsyncioTestCase):
         self.calls.clear()
         await self.b['_call_ai']({'base':'https://open.bigmodel.cn/api/paas/v4','key':'dummy-key','model':'glm-5.3-flash'},'image',20,False)
         self.assertNotIn('thinking',self.calls[-1][1]['json'])
+
+    async def test_relay_keeps_compatible_token_budget_and_summary_can_omit_it(self):
+        cfg = {'base': 'https://example.invalid/v1', 'key': 'dummy-key', 'model': 'gpt-6.1-sol', 'reasoning_effort': 'max'}
+        await self.b['_call_ai'](cfg, '聊天', 500, feature='ai_flock')
+        payload = self.calls[-1][1]['json']
+        self.assertEqual(payload['max_tokens'], 500)
+        self.assertNotIn('max_completion_tokens', payload)
+        await self.b['_call_ai'](cfg, '总结', None, feature='summary')
+        self.assertNotIn('max_completion_tokens', self.calls[-1][1]['json'])
+        self.assertNotIn('max_tokens', self.calls[-1][1]['json'])
+        self.response_data = {'choices': [{'message': {'content': '', 'reasoning_content': '思考内容'}, 'finish_reason': 'length'}]}
+        with self.assertRaisesRegex(RuntimeError, '上限'):
+            await self.b['_call_ai'](cfg, '聊天', 500, feature='ai_flock')
+
+    async def test_summary_unlimited_omits_token_limits_for_all_request_variants(self):
+        for model, assistant in [('plain-model', False), ('gpt-6.1-sol', False), ('glm-5.3-flash', True)]:
+            with self.subTest(model=model):
+                cfg = {'base': 'https://open.bigmodel.cn/api/paas/v4', 'key': 'dummy-key', 'model': model}
+                await self.b['_call_ai'](cfg, '完整总结', None, assistant_mode=assistant, feature='summary')
+                payload = self.calls[-1][1]['json']
+                self.assertNotIn('max_tokens', payload)
+                self.assertNotIn('max_completion_tokens', payload)
+                self.assertEqual(self.client_options['timeout'], 90)
+
+    async def test_reasoning_blocks_are_not_treated_as_final_text(self):
+        cfg = {'base': 'https://example.invalid/v1', 'key': 'dummy-key', 'model': 'm'}
+        for content in ([{'type': 'reasoning', 'text': '只有思考'}], {'text': '错误的正文格式'}):
+            with self.subTest(content=content):
+                self.response_data = {'choices': [{'message': {'content': content}}]}
+                with self.assertRaises(RuntimeError):
+                    await self.b['_call_ai'](cfg, '聊天', feature='ai_flock')
+        self.response_data = {'choices': [{'message': {'content': [
+            {'type': 'reasoning', 'text': '不可发送的思考'}, {'type': 'text', 'text': '正常回复'}]}}]}
+        self.assertEqual(await self.b['_call_ai'](cfg, '聊天', feature='ai_flock'), '正常回复')
+
+    async def test_summary_provider_truncation_tries_backup_instead_of_returning_partial_text(self):
+        ids = []
+        for note in ('首选', '备用'):
+            ids.append((await self.b['create_ai_provider'](self.b['AIProviderInput'](
+                note=note, base='https://example.invalid/v1', key='dummy-key', model=note)))['provider']['id'])
+        original, outer = self.b['httpx'].AsyncClient, self
+        complete = '完整的讨论结论。' * 300 + '总结完毕'
+        class Responses(original):
+            async def post(self, url, **kwargs):
+                await super().post(url, **kwargs)
+                first = len(outer.calls) == 1
+                return SimpleNamespace(status_code=200, json=lambda: {'choices': [{
+                    'message': {'content': '只有一半的总结' if first else complete},
+                    'finish_reason': 'length' if first else 'stop'}],
+                    'usage': {'prompt_tokens': 10, 'completion_tokens': 20}})
+        self.b['httpx'] = SimpleNamespace(AsyncClient=Responses)
+        trace = {}
+        answer = await self.b['_call_ai_any']('完整总结', max_tokens=None, provider_ids=','.join(ids),
+                                              feature='summary', trace=trace)
+        self.assertEqual(answer, complete)
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn('模型服务商', trace['failures'][0])
+        self.assertEqual(self.b['conn'].execute("SELECT SUM(input_tokens+output_tokens) FROM ai_usage WHERE feature='summary'").fetchone()[0], 60)
+
+    async def test_reasoning_only_response_switches_to_selected_backup(self):
+        ids = []
+        for note in ('首选', '备用'):
+            ids.append((await self.b['create_ai_provider'](self.b['AIProviderInput'](
+                note=note, base='https://example.invalid/v1', key='dummy-key', model=note)))['provider']['id'])
+        original = self.b['httpx'].AsyncClient
+        outer = self
+        class Responses(original):
+            async def post(self, url, **kwargs):
+                response = await super().post(url, **kwargs)
+                if len(outer.calls) == 1:
+                    return SimpleNamespace(status_code=200, json=lambda: {'choices': [
+                        {'message': {'content': None, 'reasoning_content': '只有思考没有正文'}, 'finish_reason': 'stop'}]})
+                return response
+        self.b['httpx'] = SimpleNamespace(AsyncClient=Responses)
+        trace = {}
+        result = await self.b['_call_ai_any']('聊聊天', provider_ids=','.join(ids), feature='ai_flock',
+                                             validate=self.b['_flock_reply'], trace=trace)
+        self.assertEqual(self.b['_flock_split'](result)[2], '测试成功')
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(trace['provider_id'], ids[1])
+        self.assertIn('没有最终正文', trace['failures'][0])
 
 
 if __name__ == '__main__':

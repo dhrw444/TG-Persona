@@ -3,6 +3,7 @@
 运行：python3 -m unittest discover -s test_suite -p 'test_backend.py' -v
 """
 import ast
+import difflib
 import asyncio
 import base64
 from collections import OrderedDict
@@ -30,7 +31,13 @@ from types import SimpleNamespace
 from typing import Optional
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+import uuid
+import shutil
 import zlib
+import persona_store
+import persona_features
+from telethon.extensions import markdown as telethon_markdown
+from account_runtime import AIRequestScheduler
 from custom_workflow import (canonical_steps, canonical_trigger, group_matches, parse_steps,
                              parse_trigger, redact as redact_custom, render_template, search_pattern,
                              uses_credentials, uses_default_target, uses_trigger_context, validate_template)
@@ -61,7 +68,11 @@ class Response:
         self.cookies[name] = dict(value=value, **kwargs)
 
 
-class FloodWait(Exception):
+class RPCError(Exception):
+    code = 400
+
+
+class FloodWait(RPCError):
     def __init__(self, seconds):
         self.seconds = seconds
 
@@ -82,8 +93,19 @@ def load_backend():
                          'AI_FLOCK_BUDGET_RANGES', 'AI_FLOCK_LEARNING_MESSAGES',
                          'AI_FLOCK_LEARNING_MESSAGE_CHARS', 'AI_FLOCK_LEARNING_SKILL_CHARS',
                          'AI_FLOCK_LEARNING_MAX_TOKENS', 'AI_FLOCK_LEARNING_UNLIMITED_MAX_TOKENS',
-                         'AI_FLOCK_LEARNING_RANGES', 'SKILL_MAX_BYTES',
-                         'AI_FLOCK_MEMORY_BLOCK_MAX_BYTES', 'AI_FLOCK_DISTILL_MAX_TOKENS'}
+                          'AI_FLOCK_LEARNING_RANGES', 'SKILL_MAX_BYTES', 'KNOWLEDGE_MAX_BYTES', 'AI_FLOCK_KNOWLEDGE_CHARS',
+                          'AI_FLOCK_MEMORY_BLOCK_MAX_BYTES', 'AI_FLOCK_DISTILL_MAX_TOKENS', '_KNOWLEDGE_INTENT', 'AUTO_BACKUP_PREFIX', 'AI_REASONING_EFFORTS', 'AI_CLIENT_PROFILES', '_OWNER_AI_DEFAULTS',
+                          'AI_FLOCK_PROVIDER_TIMEOUT', 'AI_FLOCK_TOTAL_TIMEOUT', 'AI_FLOCK_QUEUE_TIMEOUT', 'AI_FLOCK_PROVIDER_RETRY_AFTER',
+                          'MEMORY_ENTRY_MAX_CHARS', 'MEMORY_HARD_CAP_CHARS', 'MEMORY_POOL_MAX', 'SKILL_PINNED_BONUS',
+                          'SKILL_FIXED_RATIO', 'SKILL_RECENT_MAX', 'SKILL_DETAIL_MAX', 'SKILL_SUMMARY_MAX',
+                          'SKILL_FADING_MAX_COUNT', 'SKILL_FADING_IDLE_DAYS', 'STUDY_PER_GROUP_MAX', 'STUDY_TOTAL_MAX',
+                          'TOPIC_STOP_TERMS', '_MEMORY_ID_PREFIX', '_MEMORY_STAGE_WEIGHT', '_button_ai_result',
+                        '_CODE_USED_NOTICE_RE', '_CODE_MASK_CHARS', 'KNOWLEDGE_AUTO_MAX_BYTES',
+                        'KNOWLEDGE_MAX_BYTES', 'SKILL_MAX_BYTES',
+                        '_LE_REPEAT', '_LE_CATEGORY_WORDS', '_LE_NEUTRAL', '_LE_SIGNAL', '_LE_CHARS',
+                        '_LE_REPLAY', '_LE_STATS', '_LE_SAMPLES', '_LE_FLUSH_AT', "PEOPLE_LINES", "PEOPLE_WHITE_LINES", "PEOPLE_BUDGET", "PEOPLE_SAMPLE_STEP", "PEOPLE_PROFILE_PROMPT",
+                        'MEMORY_STALE_DAYS', 'SENT_DEDUPE_SECONDS', 'BUBBLE_SPLIT_RATIO',
+                        'BUBBLE_SPLIT_RATIO_AFTER_GRAB', 'BUBBLE_MAX_PARTS'}
     selected = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -93,16 +115,16 @@ def load_backend():
             selected.append(node)
     names = {name: globals()[name] for name in ('ast', 'asyncio', 'base64', 'OrderedDict', 'datetime',
              'timezone', 'timedelta', 'hashlib', 'hmac', 'ipaddress', 'json', 'math', 'random', 're',
-              'secrets', 'socket', 'sqlite3', 'struct', 'time', 'zlib', 'ContextVar')}
+               'secrets', 'socket', 'sqlite3', 'struct', 'time', 'zlib', 'difflib', 'ContextVar', 'uuid', 'shutil', 'telethon_markdown', 'persona_store', 'persona_features')}
     names.update(BaseModel=Model, Optional=Optional, Field=lambda default=None, **kw: default, Request=SimpleNamespace,
                   HTTPException=HTTPException, JSONResponse=Response, Response=Response, os=os, io=io,
-                  log=Mock(), errors=SimpleNamespace(FloodWaitError=FloodWait, RPCError=Exception,
+                  log=Mock(), errors=SimpleNamespace(FloodWaitError=FloodWait, RPCError=RPCError,
                   AuthKeyUnregisteredError=Unauthorized), ZoneInfo=None,
                   SendReactionRequest=lambda **kw: SimpleNamespace(**kw),
                   ReactionEmoji=lambda **kw: SimpleNamespace(**kw),
                   _captcha=OrderedDict(), _login_fail=OrderedDict(), _auth_gc_at=0.0,
                   _ai_cfg={}, _ai_rr={}, _ai_usage_guard=threading.Lock(),
-                 TRUSTED_PROXIES=(), _auto_running={}, signin_plans={}, poll_last={}, auto_last_ts={},
+                  TRUSTED_PROXIES=(), BASE=SOURCE.parent, _auto_running={}, signin_plans={}, poll_last={}, auto_last_ts={},
                  _session_alerted=False, tg_state={'phase': 'ready', 'me': {'id': 1}, 'err': None},
                   _running={'paused': True}, client=SimpleNamespace(), notify_event=Mock(), send_notify=Mock())
     names.update(canonical_steps=canonical_steps, canonical_trigger=canonical_trigger,
@@ -114,7 +136,7 @@ def load_backend():
     aliases = {'db': 'conn', 'auto_tasks': '_auto_running', 'running': '_running',
                'session_alerted': '_session_alerted', 'cache': '_cache', 'dialog_cache': '_dialog_cache'}
     dict_fields = {'cache','dialog_cache','running','tg_state','hits_count','last_hit_ts','flock_buf',
-                    'auto_last_ts','signin_plans','poll_last','auto_tasks','ai_flock_last','ai_flock_blocked'}
+                    'auto_last_ts','signin_plans','poll_last','auto_tasks','ai_flock_last','ai_flock_blocked','ai_knowledge_last','ai_flock_status','ai_flock_tests','ai_flock_provider_retry_at','ai_flock_frequency'}
     set_fields = {'tasks','ai_flock_busy_groups','generated_message_ids'}
     class RuntimeFixture:
         id = 'default'
@@ -123,6 +145,13 @@ def load_backend():
         session_path = '/tmp/never-read-backend-fixture/tg'
         avatar_file = Path('/tmp/never-read-backend-fixture/avatar.jpg')
         skill_file = Path('/tmp/never-read-backend-fixture/skill.md')
+        knowledge_file = Path('/tmp/never-read-backend-fixture/knowledge.md')
+        study_file = Path('/tmp/never-read-backend-fixture/study.md')
+        @property
+        def ai_scheduler(self):
+            if self._ai_scheduler is None:
+                self._ai_scheduler = AIRequestScheduler()
+            return self._ai_scheduler
         @property
         def ai_flock_lock(self):
             if self._ai_flock_lock is None:
@@ -133,9 +162,19 @@ def load_backend():
             if self._skill_lock is None:
                 self._skill_lock = asyncio.Lock()
             return self._skill_lock
+        @property
+        def knowledge_lock(self):
+            if self._knowledge_lock is None:
+                self._knowledge_lock = asyncio.Lock()
+            return self._knowledge_lock
+        @property
+        def ai_budget_lock(self):
+            if self._ai_budget_lock is None:
+                self._ai_budget_lock = asyncio.Lock()
+            return self._ai_budget_lock
         def __getattr__(self, name):
             key = aliases.get(name, name)
-            default = {} if name in dict_fields else set() if name in set_fields else False if name in ('handler_registered','session_alerted','closing','closed','stopping','ai_flock_busy') else 0 if name == 'ai_flock_waiting' else '' if name=='tg_phone' else None
+            default = {} if name in dict_fields else set() if name in set_fields else False if name in ('handler_registered','session_alerted','closing','closed','stopping','ai_flock_busy','ai_learning_busy','ai_skill_upload_busy') else 0 if name in ('ai_flock_waiting','ai_learning_next_at') else '' if name=='tg_phone' else None
             return names.setdefault(key, default)
         def __setattr__(self, name, value):
             names[aliases.get(name, name)] = value
@@ -151,7 +190,7 @@ def load_backend():
             self.status=status
             super().__init__(message)
     runtime = RuntimeFixture()
-    names.update(get_runtime=lambda:runtime, AccountError=FixtureAccountError)
+    names.update(get_runtime=lambda:runtime, AccountError=FixtureAccountError, AIRequestScheduler=AIRequestScheduler)
     code = compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])), str(SOURCE), 'exec')
     # 禁止执行器读文件或创建真实数据库，即使未来代码引入意外初始化也立刻失败。
     with patch('builtins.open', side_effect=AssertionError('测试拒绝文件I/O')), \
@@ -159,6 +198,7 @@ def load_backend():
         exec(code, names)
     names['conn'] = sqlite3.connect(':memory:')
     names['conn'].row_factory = sqlite3.Row
+    names['get_root_db'] = lambda: names['conn']
     names['db_init']()
     names['notify_event'], names['send_notify'] = Mock(), Mock()
     return names
@@ -588,6 +628,32 @@ class BackendBase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.b['run_custom'](self.row(aid)))
         button.click.assert_awaited_once()
 
+    async def test_grabcodes_skips_someone_used_code_notice(self):
+        self.b['_running']['paused'] = False
+        await self.create(type='grabcodes', target='@RegBot', groups='-100666', keywords='注册码',
+                          reply_text='/start {code}', name='抢注')
+        text = '· 🎟️ 注册码使用 - Amazon [1388314968] 使用了 臻影Ultra hd movie server-30-Register-PRO_Y8s░░░░'
+        msg = message(88, text)
+        event = SimpleNamespace(message=msg, raw_text=text, id=88, chat_id=-100666, is_group=True,
+                                out=False,
+                                sender=SimpleNamespace(id=2, username='bot1', first_name='臻影', last_name=''))
+        self.b['client'].send_message.reset_mock()
+        await self.b['on_auto_event'](event)
+        self.b['client'].send_message.assert_not_called()
+
+    async def test_redpacket_skips_plain_messages_without_hit_log(self):
+        self.b['_running']['paused'] = False
+        await self.create(type='redpacket', target='', groups='-100555', name='红包')
+        msg = message(77, '普通聊天，没有红包按钮')
+        event = SimpleNamespace(message=msg, raw_text=msg.raw_text, id=77, chat_id=-100555,
+                                is_group=True, out=False,
+                                sender=SimpleNamespace(id=1, username='u1', first_name='群友', last_name=''))
+        before = self.b['conn'].execute("SELECT COUNT(*) FROM hits WHERE action='redpacket'").fetchone()[0]
+        await self.b['on_auto_event'](event)
+        after = self.b['conn'].execute("SELECT COUNT(*) FROM hits WHERE action='redpacket'").fetchone()[0]
+        self.assertEqual(after, before)
+        self.assertEqual(self.b['get_runtime']().auto_last_ts, {})
+
     async def test_custom_group_trigger_queues_button_and_start_context(self):
         self.b['_running']['paused'] = False
         self.b['conn'].execute("INSERT INTO watched_groups(chat_id,name) VALUES('-100123','fixture')")
@@ -694,6 +760,97 @@ class BackendBase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(direct),{'_send_generated_message'})
         self.assertGreaterEqual(SOURCE.read_text().count('_event_generated_message(event,'),3)
 
+    async def test_button_modes_script_ai_and_fallback(self):
+        await self.b['create_ai_provider'](self.b['AIProviderInput'](
+            note='按钮 AI', base='https://example.invalid/v1', key='fixture-key', model='m'))
+        first = SimpleNamespace(text='普通功能', click=AsyncMock())
+        wanted = SimpleNamespace(text='立即签到', click=AsyncMock())
+        buttons = [[first, wanted]]
+        self.b['_call_ai_any'] = AsyncMock(return_value='立即签到')
+        selected = await self.b['_select_btn_mode'](buttons, '签到', mode='script')
+        self.assertIs(selected, wanted)
+        self.b['_call_ai_any'].assert_not_awaited()
+        selected = await self.b['_select_btn_mode'](buttons, '不存在', mode='ai', hint='签到任务')
+        self.assertIs(selected, wanted)
+        self.b['_call_ai_any'].assert_awaited_once()
+        self.assertEqual(self.b['_call_ai_any'].await_args.kwargs['max_tokens'], 1800)
+        self.b['_call_ai_any'].reset_mock()
+        selected = await self.b['_select_btn_mode'](buttons, '签到', mode='fallback')
+        self.assertIs(selected, wanted)
+        self.b['_call_ai_any'].assert_not_awaited()
+        selected = await self.b['_select_btn_mode'](buttons, '不存在', mode='fallback')
+        self.assertIs(selected, wanted)
+        self.b['_call_ai_any'].assert_awaited_once()
+        self.b['_call_ai_any'].reset_mock()
+        cache = {}
+        await self.b['_select_btn_mode'](buttons, '不存在', mode='ai', ai_cache=cache)
+        await self.b['_select_btn_mode'](buttons, '不存在', mode='ai', ai_cache=cache)
+        self.b['_call_ai_any'].assert_awaited_once()
+        self.b['_call_ai_any'] = AsyncMock(side_effect=RuntimeError('只有思考没有正文'))
+        self.assertIsNone(await self.b['_select_btn_mode'](buttons, '不存在', mode='ai'))
+        self.assertIn('只有思考没有正文', self.b['_button_ai_result'].get())
+
+    async def test_replay_is_read_only_and_reports_ai_fallback(self):
+        await self.b['create_ai_provider'](self.b['AIProviderInput'](
+            note='按钮 AI', base='https://example.invalid/v1', key='fixture-key', model='m'))
+        aid = await self.create(name='回放签到', target='@dummy', command='/sign', click_btn=1,
+                                btn_text='签到', button_mode='fallback')
+        button = SimpleNamespace(text='Check now', click=AsyncMock())
+        replay_message = message(8, '请选择功能', buttons=[[button]])
+        self.b['client'] = SimpleNamespace(get_messages=AsyncMock(return_value=[replay_message]),
+                                           send_message=AsyncMock())
+        self.b['resolve_entity'] = AsyncMock(return_value='entity')
+        self.b['_call_ai_any'] = AsyncMock(side_effect=AssertionError('replay must not call AI'))
+        result = await self.b['replay_auto'](aid)
+        self.assertTrue(result['dry_run'])
+        self.assertTrue(result['sources'][0]['messages'][0]['ai_needed'])
+        self.assertEqual(result['sources'][0]['messages'][0]['script_match'], '')
+        self.assertIn('未发送', result['notice'])
+        self.b['client'].send_message.assert_not_awaited()
+        button.click.assert_not_awaited()
+        self.b['_call_ai_any'].assert_not_awaited()
+
+    async def test_replay_returns_only_latest_relevant_message(self):
+        """只读试运行不要把十几天前的签到回显全倒出来，只留当前那条能用的。"""
+        aid = await self.create(name='回放签到', target='@dummy', command='/sign', click_btn=1,
+                                btn_text='签到', button_mode='script')
+        button = SimpleNamespace(text='签到', click=AsyncMock())
+        history = [message(7, '当前持有 309 问币'), message(6, '恭喜获得 -1 问币'),
+                   message(5, '恭喜获得 3 问币')]
+        latest = message(8, '请选择功能', buttons=[[button]])
+        self.b['client'] = SimpleNamespace(get_messages=AsyncMock(return_value=[latest] + history),
+                                           send_message=AsyncMock())
+        self.b['resolve_entity'] = AsyncMock(return_value='entity')
+        result = await self.b['replay_auto'](aid)
+        msgs = result['sources'][0]['messages']
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]['id'], 8)
+        self.assertEqual(msgs[0]['script_match'], '签到')
+
+    async def test_button_failure_log_keeps_real_mode(self):
+        await self.b['create_ai_provider'](self.b['AIProviderInput'](
+            note='按钮 AI', base='https://example.invalid/v1', key='fixture-key', model='m'))
+        aid = await self.create(name='AI 签到', target='@dummy', command='/sign', click_btn=1, button_mode='ai')
+        row = self.row(aid)
+        self.assertFalse(self.b['_task_failure'](row, '本轮签到未找到匹配按钮'))
+        detail = json.loads(self.b['conn'].execute('SELECT detail FROM hits ORDER BY id DESC').fetchone()[0])
+        self.assertEqual(detail['button_mode'], 'ai')
+        self.assertIn('AI 未返回', detail['button_ai_result'])
+
+    async def test_signin_success_mask_allows_second_daily_window(self):
+        aid = await self.create(name='双次签到', win_start='08:00', win_end='12:00',
+                                signin_second_enabled=1, signin_second_start='13:00', signin_second_end='14:00')
+        self.b['run_signin'] = AsyncMock(return_value=True)
+        await self.b['_execute_auto'](aid)
+        first = self.row(aid)
+        self.assertEqual((first['signin_success_mask'], first['last_status']), (1, 'success'))
+        self.advance(4.5 * 3600)
+        await self.b['_execute_auto'](aid)
+        second = self.row(aid)
+        self.assertEqual(second['signin_success_mask'], 3)
+        self.assertTrue((await self.b['list_autos']())['autos'][0]['signed_today'])
+        self.assertEqual(self.b['run_signin'].await_count, 2)
+
     async def test_db_migration_adds_attempt_and_preserves_legacy_success(self):
         aid = await self.create()
         self.b['conn'].execute('UPDATE automations SET last_at=?,last_status=? WHERE id=?', ('2026-10-30', 'running', aid))
@@ -707,6 +864,15 @@ class BackendBase(unittest.IsolatedAsyncioTestCase):
         self.assertIn('signin_recognition_mode', a.keys())
         self.assertIn('signin_image_prompt', a.keys())
         self.assertIn('signin_image_action', a.keys())
+        self.assertIn('button_mode', a.keys())
+        self.assertIn('popup_success_kw', a.keys())
+        self.assertIn('popup_fail_kw', a.keys())
+        self.assertIn('signin_independent', a.keys())
+        self.assertIn('signin_second_enabled', a.keys())
+        self.assertIn('signin_second_start', a.keys())
+        self.assertIn('signin_second_end', a.keys())
+        self.assertIn('signin_success_mask', a.keys())
+        self.assertIn('signin_attempt_slot', a.keys())
 
 
 if __name__ == '__main__':

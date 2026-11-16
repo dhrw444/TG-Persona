@@ -2,6 +2,20 @@
 // 原前端代码提取后运行；不访问服务器，不依赖第三方 DOM 库。
 const fs=require('fs'),path=require('path'),vm=require('vm'),assert=require('assert');
 const html=fs.readFileSync(path.join(__dirname,'../web/index.html'),'utf8');
+// 按「下一个 autof 表单」截取，避免断言依赖表单兄弟顺序。
+function cardOf(id){
+  const start=html.indexOf('id="'+id+'"');
+  if(start<0)return '';
+  const next=html.indexOf('<div class="fold sub-fold" id="',start+10);
+  return html.slice(start,next<0?html.length:next);
+}
+function formOf(id){
+  const start=html.indexOf('id="af-'+id+'"');
+  if(start<0)return '';
+  const next=html.indexOf('<div class="autof" id="af-',start+10);
+  return html.slice(start,next<0?html.length:next);
+}
+
 const js=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const elements=new Map(),calls=[],intervals=new Map(),readers=[];let intervalId=0,nodeId=0;
 class MockFileReader{
@@ -81,6 +95,7 @@ run(slice('async function reloadCaptcha(){','async function panelLogin'));
 run(slice('async function changePw(){','async function logoutAll'));
 run(slice('let updTimer=null','async function checkUpdate'));
 run(slice('// ---------- AI 与验证码测试 ----------','async function changePw(){'));
+run(slice('// ---------- 群游戏 ----------','async function bootstrap(){'));
 for(const id of ['#aiTestResult','#captchaTestResult','#backupsInfo','#backupsReason','#backupsList','#backupsResult']){
   Object.defineProperty(element(id),'innerHTML',{get(){return ''},set(){throw new Error('测试结果必须用 textContent')}});
 }
@@ -127,7 +142,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     a.signed_today=true;assert(run('autoDesc(autoInput)').includes('今日已签'));
   });
   await test('定时抢注表单提供秒级时间和完整单次流程字段',async()=>{
-    const form=html.slice(html.indexOf('id="af-scheduled_register"'),html.indexOf('id="af-grabcodes"'));
+    const form=formOf('scheduled_register');
     for(const id of ['trName','trDate','trTime','trSecond','trTarget','trCommand','trButton','trHistoryFirst','trClosedRetry','trClosedKeywords','trClosedInterval','trTrigger','trReply','trSuccess','trTimeout'])assert(form.includes('id="'+id+'"'));
     const date=form.match(/<input\b[^>]*id="trDate"[^>]*>/)[0];assert(date.includes('type="text"'));assert(date.includes('maxlength="10"'));
     const time=form.match(/<input\b[^>]*id="trTime"[^>]*>/)[0];assert(time.includes('type="text"'));assert(time.includes('readonly'));assert(time.includes("openTimePicker('trTime')"));
@@ -141,10 +156,10 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     element('#trClosedRetry').checked=true;element('#trClosedKeywords').value='注册已关闭';element('#trClosedInterval').value='7';
     let body;context.api=async(_path,options)=>{body=JSON.parse(options.body);return {}};
     await run("saveAuto('scheduled_register')");
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(body)),{type:'scheduled_register',name:'限时注册',scheduled_at:'2026-10-30T09:00:01',target:'@dummy_bot',command:'/start',click_btn:1,btn_text:'开始注册',history_first:1,fail_kw:'注册已关闭',poll_interval:7,keywords:'请输入注册码',reply_text:'TEST-CODE',success_kw:'注册成功',result_timeout:45,retries:0});
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(body)),{type:'scheduled_register',name:'限时注册',scheduled_at:'2026-10-30T09:00:01',target:'@dummy_bot',command:'/start',click_btn:1,btn_text:'开始注册',button_mode:'script',history_first:1,fail_kw:'注册已关闭',poll_interval:7,keywords:'请输入注册码',reply_text:'TEST-CODE',success_kw:'注册成功',result_timeout:45,retries:0});
   });
   await test('签到表单包含两段中文秒数标签、默认值及范围步进',async()=>{
-    const form=html.slice(html.indexOf('id="af-signin"'),html.indexOf('id="af-grabcodes"'));
+    const form=formOf('signin');
     for(const [id,label,value] of [['sCommandDelay','发送命令后延迟（秒）','1.6'],['sButtonDelay','点击按钮后延迟（秒）','2']]){
       assert(form.includes('<label for="'+id+'">'+label+'</label>'));
       const input=form.match(new RegExp('<input\\b[^>]*id="'+id+'"[^>]*>'))[0];
@@ -199,7 +214,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(element('#sCaptchaProviders').innerHTML.includes('备用线路'));
   });
   await test('签到图片处理三选一，图片模式保存自定义提示词并兼容旧验证码任务',async()=>{
-    const form=html.slice(html.indexOf('id="af-signin"'),html.indexOf('id="af-grabcodes"'));
+    const form=formOf('signin');
     for(const mode of ['none','captcha','image'])assert(form.includes('<option value="'+mode+'"'));
     prepareSignin();assert.strictEqual(element('#sImagePrompt').value,run('DEFAULT_SIGNIN_IMAGE_PROMPT'));
     element('#sRecognitionMode').value='image';element('#sImagePrompt').value='只输出物体名称';let body;
@@ -238,7 +253,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(run('autoDesc(autoInput)').includes('&lt;img'));
   });
   await test('结果等待表单包含默认值范围步进及持续轮询语义',async()=>{
-    const form=html.slice(html.indexOf('id="af-signin"'),html.indexOf('id="af-grabcodes"'));
+    const form=formOf('signin');
     for(const [id,label,value,min,max,step] of [['sResultDelay','结果判断前延迟（秒）','0','0','120','0.1'],['sResultTimeout','等待最终回复上限（秒）','30','1','300','1']]){
       assert(form.includes('<label for="'+id+'">'+label+'</label>'));
       const input=form.match(new RegExp('<input\\b[^>]*id="'+id+'"[^>]*>'))[0];
@@ -277,7 +292,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
       for(const id of ['#sIsChat','#sClickBtn'])element(id).checked=true;element('#sRecognitionMode').value='captcha';
       let request;context.api=async(p,o)=>{request=[p,o];return {}};await run("saveAuto('signin')");
       assert.strictEqual(request[0],editing?'/api/autos/42':'/api/autos');assert.strictEqual(request[1].method,editing?'PUT':'POST');
-      const expected={type:'signin',name:'完整任务',target:'@dummy_bot',command:'/checkin',icon_url:'https://dummy.invalid/icon.png',is_chat:1,win_start:'09:00',win_end:'10:00',click_btn:1,btn_text:'签到',btn_emoji:'✅',click_times:3,click_interval:500,refresh_buttons:0,command_delay:0,button_delay:2.7,result_delay:delay,result_timeout:timeout,success_kw:'成功',fail_kw:'明确失败',points_pat:'积分:(\\d+)',retries:0,signin_recognition_mode:'captcha',signin_image_prompt:run('DEFAULT_SIGNIN_IMAGE_PROMPT'),signin_image_action:'reply',signin_captcha:1};
+      const expected={type:'signin',name:'完整任务',target:'@dummy_bot',command:'/checkin',icon_url:'https://dummy.invalid/icon.png',is_chat:1,win_start:'09:00',win_end:'10:00',signin_independent:0,signin_second_enabled:0,signin_second_start:'12:00',signin_second_end:'12:30',click_btn:1,btn_text:'签到',btn_emoji:'✅',click_times:3,click_interval:500,refresh_buttons:0,button_mode:'script',popup_success_kw:'',popup_fail_kw:'',command_delay:0,button_delay:2.7,result_delay:delay,result_timeout:timeout,success_kw:'成功',fail_kw:'明确失败',points_pat:'积分:(\\d+)',retries:0,signin_recognition_mode:'captcha',signin_image_prompt:run('DEFAULT_SIGNIN_IMAGE_PROMPT'),signin_image_action:'reply',signin_captcha:1};
       if(editing)expected.enabled=0;assert.deepStrictEqual(JSON.parse(request[1].body),expected);
     }
   });
@@ -478,7 +493,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert.strictEqual(element('#updCheck').disabled,false);
   });
   await test('AI API 已移到设置，自动化 AI 测试卡不包含密钥表单',async()=>{
-    const captcha=html.slice(html.indexOf('>AI 测试<'),html.indexOf('id="aCntSign"'));
+    const captcha=html.slice(html.indexOf('>能力测试<'),html.indexOf('id="aCntSign"'));
     const settings=html.slice(html.indexOf('<section id="tab-settings">'),html.indexOf('</section>',html.indexOf('<section id="tab-settings">')));
     for(const id of ['aiProvidersList','aiProviderAdd','aiProviderNote','aiProviderBase','aiProviderKey','aiProviderModel'])assert(settings.includes('id="'+id+'"'));
     assert(settings.includes('type="password" id="aiProviderKey"'));
@@ -497,17 +512,51 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     context.providerFixture=[{id:'0123456789abcdef',note:'主线路',base:'https://dummy.invalid/v1',model:'dummy',enabled:true,key_present:true,input_tokens:0,output_tokens:0}];run("aiProviders=providerFixture;openAIProviderForm('0123456789abcdef')");
     assert.strictEqual(element('#aiProviderKey').value,'');assert(element('#aiProviderKey').placeholder.includes('留空不修改'));
   });
-  await test('单条 AI API 测试展示实际回复、耗时和错误',async()=>{
-    context.providerFixture=[{id:'0123456789abcdef',note:'主线路',base:'https://dummy.invalid/v1',model:'dummy',enabled:true}];run('aiProviders=providerFixture');
-    context.api=async()=>({ok:true,reply:'测试成功',elapsed_ms:27});context.loadAIProviders=async()=>{};
-    await run("mutateAIProvider('0123456789abcdef','test')");assert(element('#aiTestResult').textContent.includes('连接测试成功')&&element('#aiTestResult').textContent.includes('27 ms'));
-    context.api=async()=>({ok:false,reply:'<img>',error:'失败 <script>',elapsed_ms:9});await run("mutateAIProvider('0123456789abcdef','test')");
-    assert(element('#aiTestResult').textContent.includes('<img>')&&element('#aiTestResult').textContent.includes('失败 <script>'));
+  await test('AI API 思考强度保存回填渲染且旧配置默认跟随模型',async()=>{
+    const options=html.match(/<select id="aiProviderReasoning"[\s\S]*?<\/select>/)[0];
+    for(const effort of ['default','none','low','medium','high','xhigh','max'])assert(options.includes('value="'+effort+'"'));
+    context.providerFixture=[{id:'0123456789abcdef',note:'旧线路',base:'https://dummy.invalid/v1',model:'dummy',enabled:true}];
+    run('aiProviders=providerFixture;renderAIProviders()');assert(element('#aiProvidersList').innerHTML.includes('思考强度：模型默认'));
+    run("openAIProviderForm('0123456789abcdef')");assert.strictEqual(element('#aiProviderReasoning').value,'default');
+    context.providerFixture=[{id:'0123456789abcdef',note:'高强度',base:'https://dummy.invalid/v1',model:'dummy',enabled:true,reasoning_effort:'xhigh'}];
+    run('aiProviders=providerFixture;renderAIProviders()');assert(element('#aiProvidersList').innerHTML.includes('思考强度：极高（xhigh）'));
+    run("openAIProviderForm('0123456789abcdef')");assert.strictEqual(element('#aiProviderReasoning').value,'xhigh');
+    let saved;context.api=async(_p,o)=>{saved=JSON.parse(o.body);return {ok:true}};context.loadAIProviders=async()=>{};
+    await run('saveAIProvider()');assert.strictEqual(saved.reasoning_effort,'xhigh');
+    run('closeAIProviderForm()');assert.strictEqual(element('#aiProviderReasoning').value,'default');
+    context.providerFixture=[{id:'fedcba9876543210',note:'切换',base:'https://dummy.invalid/v1',model:'dummy',enabled:true,reasoning_effort:'max'}];run('aiProviders=providerFixture');
+    context.api=async(_p,o)=>{saved=JSON.parse(o.body);return {ok:true}};
+    await run("mutateAIProvider('fedcba9876543210','toggle')");assert.strictEqual(saved.reasoning_effort,'max');assert.strictEqual(saved.enabled,false);
   });
-  await test('被任务引用的 AI API 停用删除错误正常显示',async()=>{
-    context.providerFixture=[{id:'0123456789abcdef',note:'被引用线路',base:'https://dummy.invalid/v1',model:'dummy',enabled:true}];run('aiProviders=providerFixture');context.window.confirm=()=>true;context.api=async()=>{throw new Error('仍被任务引用，无法停用或删除（409）')};
+  await test('AI API 客户端伪装保存回填切换与关闭',async()=>{
+    const options=html.match(/<select id="aiProviderProfile"[\s\S]*?<\/select>/)[0];
+    for(const profile of ['none','opencode','codex','claude'])assert(options.includes('value="'+profile+'"'));
+    context.providerFixture=[{id:'0123456789abcdef',note:'中转',base:'https://dummy.invalid/v1',model:'dummy',enabled:true}];
+    run('aiProviders=providerFixture;renderAIProviders()');assert(element('#aiProvidersList').innerHTML.includes('客户端：不伪装'));
+    run("openAIProviderForm('0123456789abcdef')");assert.strictEqual(element('#aiProviderProfile').value,'none');
+    context.providerFixture=[{id:'0123456789abcdef',note:'中转',base:'https://dummy.invalid/v1',model:'dummy',enabled:true,client_profile:'opencode'}];
+    run('aiProviders=providerFixture;renderAIProviders()');assert(element('#aiProvidersList').innerHTML.includes('客户端：opencode'));
+    run("openAIProviderForm('0123456789abcdef')");assert.strictEqual(element('#aiProviderProfile').value,'opencode');
+    let saved;context.api=async(_p,o)=>{saved=JSON.parse(o.body);return {ok:true}};context.loadAIProviders=async()=>{};
+    await run('saveAIProvider()');assert.strictEqual(saved.client_profile,'opencode');
+    run('closeAIProviderForm()');assert.strictEqual(element('#aiProviderProfile').value,'none');
+    context.providerFixture=[{id:'fedcba9876543210',note:'备用',base:'https://dummy.invalid/v1',model:'dummy',enabled:true,client_profile:'codex'}];run('aiProviders=providerFixture');
+    await run("mutateAIProvider('fedcba9876543210','toggle')");assert.strictEqual(saved.client_profile,'codex');assert.strictEqual(saved.enabled,false);
+  });
+  await test('单条 AI API 测试结果显示在对应线路卡片并展示回复耗时和错误',async()=>{
+    context.providerFixture=[{id:'0123456789abcdef',note:'主线路',base:'https://dummy.invalid/v1',model:'dummy',enabled:true},{id:'fedcba9876543210',note:'备用线路',base:'https://dummy2.invalid/v1',model:'dummy2',enabled:true}];run('aiProviders=providerFixture;renderAIProviders()');
+    assert.strictEqual(run('Object.keys(aiTestResults).length'),0);run('renderAIProviders()');
+    context.api=async(p)=>{assert.strictEqual(p,'/api/ai/providers/0123456789abcdef/test');return {ok:true,reply:'测试成功',elapsed_ms:27}};context.loadAIProviders=async()=>{};
+    await run("mutateAIProvider('0123456789abcdef','test')");
+    let results=run('JSON.stringify(aiTestResults)');assert(results.includes('0123456789abcdef')&&results.includes('主线路')&&results.includes('连接测试成功')&&results.includes('27 ms'));assert(!results.includes('fedcba9876543210'));
+    context.api=async()=>({ok:false,reply:'<img>',error:'失败 <script>',elapsed_ms:9});await run("mutateAIProvider('0123456789abcdef','test')");
+    results=run('JSON.stringify(aiTestResults)');assert(results.includes('<img>')&&results.includes('失败 <script>'));
+    assert(run('aiTestResults["0123456789abcdef"].includes("主线路")'));assert(!run('aiTestResults["fedcba9876543210"]'));
+  });
+  await test('被引用的 AI API 可确认后级联清理并删除',async()=>{
+    context.providerFixture=[{id:'0123456789abcdef',note:'被引用线路',base:'https://dummy.invalid/v1',model:'dummy',enabled:true}];run("aiProviders=providerFixture;aiTestResults['0123456789abcdef']='旧测试结果'");let confirmText='',request,loads=0;context.window.confirm=message=>(confirmText=message,true);context.api=async(p,o)=>{request=[p,o];if(o?.method==='DELETE')return {ok:true,affected_references:4,configurations_changed:3};throw new Error('仍被任务引用，无法停用（409）')};context.loadAIProviders=async()=>{loads++};
     await run("mutateAIProvider('0123456789abcdef','toggle')");assert(element('#aiTestResult').textContent.includes('409'));assert(element('#aiTestResult').textContent.includes('仍被任务引用'));
-    await run("mutateAIProvider('0123456789abcdef','delete')");assert(element('#aiTestResult').textContent.includes('409'));assert.strictEqual(run('aiProviders.length'),1);context.window.confirm=()=>false;
+    await run("mutateAIProvider('0123456789abcdef','delete')");assert(confirmText.includes('所有账号')&&confirmText.includes('自动停用')&&confirmText.includes('不可恢复'));assert.strictEqual(request[0],'/api/ai/providers/0123456789abcdef');assert.strictEqual(request[1].method,'DELETE');assert(element('#aiTestResult').textContent.includes('已处理 4 处'));assert.strictEqual(run("aiTestResults['0123456789abcdef']"),undefined);assert.strictEqual(loads,1);context.window.confirm=()=>false;
   });
   await test('选择图片仅本地预览、清理结果且无上传',async()=>{
     let sent=0;context.api=async()=>{sent++;return {}};
@@ -580,7 +629,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(element('#captchaTestResult').textContent.includes('使用通道：AI'));
   });
   await test('自动化 AI 测试可切换图片识别、自定义提示词并选择 API',async()=>{
-    assert(html.includes('>AI 测试<')&&html.includes('data-ai-test-mode="captcha"')&&html.includes('data-ai-test-mode="image"'));
+    assert(html.includes('>能力测试<')&&html.includes('data-ai-test-mode="captcha"')&&html.includes('data-ai-test-mode="image"')&&html.includes('data-ai-test-mode="poem"'));
     context.providerFixture=[{id:'0123456789abcdef',note:'主线路',enabled:true},{id:'aaaaaaaaaaaaaaaa',note:'停用线路',enabled:false}];run("aiProviders=providerFixture;aiTestProviderSel=new Set(['aaaaaaaaaaaaaaaa']);renderAITestProviders()");assert.strictEqual(run('aiTestProviderSel.size'),0);assert(!element('#aiTestProviders').innerHTML.includes('停用线路'));
     selectImage();run("setAITestMode('image');aiTestProviderSel=new Set(['0123456789abcdef'])");element('#aiTestImagePrompt').value='识别并只输出物体名称';let body;
     context.api=async(_p,o)=>{body=JSON.parse(o.body);return {ok:true,text:'苹果',channel:'ai',errors:[],elapsed_ms:12}};
@@ -588,6 +637,64 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(element('#captchaTestResult').textContent.includes('图片答案：苹果'));assert(element('#captchaTestResult').textContent.includes('12 ms'));
     element('#aiTestImageAction').value='click';element('#aiTestImageOptions').value='苹果\n香蕉';context.api=async(_p,o)=>{body=JSON.parse(o.body);return {ok:true,text:'苹果',channel:'ai',errors:[],elapsed_ms:8}};await run('testCaptchaRecognition()');assert.strictEqual(body.options,'苹果\n香蕉');assert(element('#captchaTestResult').textContent.includes('匹配选项：苹果'));
     run("setAITestMode('captcha');aiTestProviderSel.clear()");
+  });
+  await test('能力测试支持古诗填空，显示答案与使用通道',async()=>{
+    selectImage();element('#sOcrOn').checked=true;run("setAITestMode('poem')");
+    assert(!element('#aiTestImagePromptWrap').classList.contains('hidden'));
+    assert(element('#captchaTestLengthWrap').classList.contains('hidden'));
+    assert(element('#captchaTestBtn').textContent==='开始古诗识别');
+    assert(!element('#aiTestCaptchaSettings').classList.contains('hidden'));
+    element('#aiTestImagePrompt').value='';
+    let body;context.api=async(_p,o)=>{body=JSON.parse(o.body);return {ok:true,text:'西',channel:'ocr',ocr_text:'蜀僧抱绿绮，O下峨眉峰。',errors:[],elapsed_ms:301}};
+    await run('testCaptchaRecognition()');
+    assert.strictEqual(body.mode,'poem');assert.strictEqual(body.length,0);
+    const txt=element('#captchaTestResult').textContent;
+    assert(txt.includes('古诗答案：西')&&txt.includes('本地 OCR')&&txt.includes('301 ms')&&txt.includes('OCR 原文'));
+    run("setAITestMode('captcha')");element('#sOcrOn').checked=false;
+  });
+  await test('能力测试按模式提示通道优先顺序',async()=>{
+    run("setAITestMode('captcha')");
+    assert(element('#aiTestChannelHint').textContent.includes('AI 优先'));
+    run("setAITestMode('poem')");
+    assert(element('#aiTestChannelHint').textContent.includes('OCR 优先'));
+    assert(element('#aiTestChannelHint').textContent.includes('AI 兜底'));
+    run("setAITestMode('image')");
+    assert(element('#aiTestChannelHint').classList.contains('hidden'));
+    run("setAITestMode('captcha')");
+  });
+  await test('能力测试提示词可一键恢复默认且默认含古诗填空',async()=>{
+    run("setAITestMode('image')");
+    element('#aiTestImagePrompt').value='被改坏的提示词';
+    run('applyDefaultImagePrompt()');
+    assert.strictEqual(element('#aiTestImagePrompt').value,run('DEFAULT_SIGNIN_IMAGE_PROMPT'));
+    assert(run('DEFAULT_SIGNIN_IMAGE_PROMPT').includes('古诗填空'));
+    assert(html.includes('onclick="applyDefaultImagePrompt()"'));
+    run("setAITestMode('captcha')");
+  });
+  await test('古诗填空任务表单可呼出、保存并关闭',async()=>{
+    context.api=async(p,o)=>{if(p==='/api/game-tasks'&&(!o||!o.method))return {items:[]};return {ok:true,id:7}};
+    await run('loadGameTasks()');
+    run('openGameForm()');
+    assert(element('#gameForm').classList.contains('show'));
+    element('#gChat').value='-1001234567890';
+    element('#gSender').value='@hsuys_bot';
+    let sent;context.api=async(p,o)=>{sent=[p,JSON.parse(o.body)];return {ok:true}};
+    await run('saveGameTask()');
+    assert.strictEqual(sent[0],'/api/game-tasks');
+    assert.strictEqual(sent[1].chat,'-1001234567890');
+    assert.strictEqual(sent[1].sender_filter,'@hsuys_bot');
+    assert(!element('#gameForm').classList.contains('show'));
+  });
+  await test('群游戏卡片含古诗填空任务与可信出题人配置',async()=>{
+    assert(html.includes('id="gameCard"')&&html.includes('自动识别被遮住的字'));
+    for(const id of ['gChat','gKeyword','gSender','gDelay','gPrompt','gDefend','gEnabled'])assert(html.includes('id="'+id+'"'));
+    assert(html.includes('/api/game-tasks'));
+    context.api=async(p)=>{if(p==='/api/game-tasks')return {items:[{id:3,subtype:'poem',chat:'-100123',trigger_kw:'猜字游戏开始',sender_filter:'@hsuys_bot',reply_delay:1,defend_ai:1,enabled:1,total:2,last_status:'success',last_detail:'西（ocr）'}]};return {ok:true}};
+    await run('loadGameTasks()');
+    assert.strictEqual(element('#gameTaskCount').textContent,'1');
+    let found=false;
+    for(const card of element('#gameTaskList').children)for(const child of card.children)if(String(child.textContent).includes('@hsuys_bot'))found=true;
+    assert(found);
   });
   await test('AI 失败但 OCR 回退成功保留通道提醒与实际文本',async()=>{
     configureAI();context.api=async()=>({ok:true,text:'<img onerror=alert(1)>',channel:'ocr',errors:[{channel:'ai',message:'AI 超时 <script>'}],elapsed_ms:73});
@@ -645,11 +752,12 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
   await test('签到日志显示来源和失败原因且不执行服务端文本',async()=>{
     context.LOG_KINDS={signin:'签到'};context.fmt=()=>'';
     run(slice('let logOpenIds=new Set();','let logQ='));
-    context.logFixture={action:'signin',ok:0,ts:1,chat_id:'@dummy',detail:{task:'fixture',command:'/start',error:'<img src=x onerror=bad()>',captcha_message_id:102,captcha_prompt:'请输入测试信息',command_delay:0,button_delay:3,refresh_buttons:0}};
+    context.logFixture={action:'signin',ok:0,ts:1,chat_id:'@dummy',detail:{task:'fixture',command:'/start',error:'<img src=x onerror=bad()>',button_mode:'ai',button_ai_result:'AI 未返回可映射的按钮或调用失败',captcha_message_id:102,captcha_prompt:'请输入测试信息',command_delay:0,button_delay:3,refresh_buttons:0}};
     const markup=run('logRow(logFixture)');
     assert(markup.includes('失败原因'));assert(markup.includes('图片来源'));assert(markup.includes('消息 #102'));
     assert(markup.includes('命令后等待'));assert(markup.includes('0 秒'));assert(markup.includes('复用同一按钮'));
     assert(markup.includes('&lt;img'));assert(!markup.includes('<img'));
+    assert(markup.includes('AI 选按钮')&&markup.includes('AI 未返回可映射'));assert(!markup.includes('脚本按钮'));
   });
   await test('定时抢注日志区分历史按钮和真实发送指令',async()=>{
     context.logFixture={action:'scheduled_register',ok:0,ts:1,chat_id:'@dummy',content:'/start',detail:{task:'抢注',status:'unconfirmed',button_source:'history',test_only:true,command:'/start',error:'未收到指定内容'}};
@@ -685,7 +793,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
   function useConfig(data=mockConfig()){q('#configFile').files=[{name:'backup.json',type:'application/json',size:1024}];ex('readConfigFile()');readers.at(-1).complete(JSON.stringify(data))}
   function resetBatch(kind='window'){ex('batchBusy=false;selectedAutoIds=new Set([1,2]);invalidateBatchPreview()');q('#batchKind').value=kind;q('#batchStart').value='08:00';q('#batchEnd').value='12:00';q('#batchEvery').value='1';q('#batchUnit').value='60'}
   await test('自定义表单只提供最新六类步骤、严格JSON和移动触控约束',async()=>{
-    const form=html.slice(html.indexOf('id="af-custom"'),html.indexOf('id="af-keepalive"'));
+    const form=formOf('custom');
     for(const type of ['send','wait','click','wait_reply','extract','captcha'])assert(form.includes("fillStep('"+type+"')"));
     for(const legacy of ["fillStep('until')","fillStep('manual')",'旧版配置无损保留'])assert(!form.includes(legacy));
     assert(form.includes('custom_trigger')===false);assert(form.includes('严格格式原始 JSON'));assert(html.includes('viewport-fit=cover'));assert(html.includes('#af-custom input:not([type=checkbox])'));
@@ -710,7 +818,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(ex("stepIssue([{t:'captcha',from:'last.text',length:'4',send_to:'',template:'{code}'}],true)").includes('第 1 步：数值字段必须是整数'));
     assert(ex("stepIssue([{...STEP_HINTS.click,timeout_ms:0}],true)").includes('等待上限'));
     assert(ex("stepIssue([{...STEP_HINTS.extract,regex:'(.)',save:'bad name'}],true)").includes('变量名'));
-    assert(ex("stepIssue([{...STEP_HINTS.click,ai:true,text:'{credential.secret}'}],true)").includes('AI 选按钮'));
+    assert(ex("stepIssue([{...STEP_HINTS.click,ai:true,mode:'ai',text:'{credential.secret}'}],true)").includes('AI 选按钮'));
     assert(ex("triggerIssue({mode:'schedule',at:'2026-02-30T09:00:00'})").includes('日期无效'));
     assert.throws(()=>ex("parseSteps(JSON.stringify(Array.from({length:51},()=>({t:'wait',ms:0}))))"),/50/);
     ex("setVisualSteps(JSON.stringify(Array.from({length:50},()=>({t:'wait',ms:0}))));fillStep('wait')");assert.strictEqual(JSON.parse(q('#cSteps').value).length,50);
@@ -739,21 +847,21 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     const requests=[];app.api=async(p,o)=>{requests.push([p,JSON.parse(o.body)]);return {ok:true}};app.loadAutos=async()=>{};await ex("saveAuto('custom')");assert.strictEqual(requests[0][1].enabled,0);assert.deepStrictEqual(requests[1],['/api/autos/45/link-credential',{user:'user',secret:'secret'}]);
   });
   await test('批量全选取消计数跨各任务类型且间隔单位转秒',async()=>{
-    ex("autos=[{id:1,type:'signin'},{id:2,type:'keepalive'},{id:3,type:'custom'}];selectAllAutos(true)");assert.strictEqual(q('#autoSelectedCount').textContent,'已选 3 项');assert(q('#autoSelectAll').checked);
-    ex('toggleAutoSelection(2,false)');assert.strictEqual(q('#autoSelectedCount').textContent,'已选 2 项');assert(q('#autoSelectAll').indeterminate);
+    ex("autos=[{id:1,type:'signin'},{id:2,type:'keepalive'},{id:3,type:'custom'}];selectAllAutos(true)");assert.strictEqual(q('#autoSelectedCount').textContent,'已选 1 项');
+    assert(!q('#autoSelectAll').indeterminate);
     ex('selectAllAutos(false)');assert.strictEqual(ex('selectedAutoIds.size'),0);
     resetBatch('interval');for(const [unit,value,seconds] of [['60','2',120],['3600','1.5',5400],['86400','1',86400],['60','0',0]]){q('#batchUnit').value=unit;q('#batchEvery').value=value;assert.strictEqual(ex('buildBatchRequest().patch.poll_interval'),seconds)}
     q('#batchEvery').value='-1';assert.throws(()=>ex('buildBatchRequest()'),/间隔/);resetBatch();q('#batchStart').value='25:00';assert.throws(()=>ex('buildBatchRequest()'),/时间/);
   });
   await test('批量JSON预览再确认提交并安全显示skip',async()=>{
     resetBatch();let requests=[];app.api=async(p,o)=>{requests.push([p,JSON.parse(o.body)]);return {ok:true,updated:[{id:1,name:'签到'}],updated_count:1,skipped:[{id:2,name:'<img src=x>',reason:'该类型不支持'}]}};
-    await ex('previewBatch()');assert.strictEqual(requests[0][0],'/api/autos/batch');assert.deepStrictEqual(requests[0][1],{ids:[1,2],action:'update',patch:{win_start:'08:00',win_end:'12:00'},preview:true});
+    await ex('previewBatch()');assert.strictEqual(requests[0][0],'/api/autos/batch');assert.deepStrictEqual(requests[0][1],{ids:[1],action:'update',patch:{win_start:'08:00',win_end:'12:00'},preview:true});
     assert(q('#batchResult').textContent.includes('跳过 <img src=x>'));assert(!q('#batchApplyBtn').disabled);
     app.window.confirm=()=>false;await ex('applyBatch()');assert.strictEqual(requests.length,1);
     app.window.confirm=()=>true;await ex('applyBatch()');assert.strictEqual(requests[1][1].preview,false);assert.deepStrictEqual(requests[1][1].patch,requests[0][1].patch);
   });
   await test('删除启停需要预览确认，改选项使旧预览失效',async()=>{
-    for(const action of ['delete','enable','disable']){resetBatch(action);let req=[];app.api=async(p,o)=>{req.push(JSON.parse(o.body));return {updated:[{id:1,name:'A'}],skipped:[]}};await ex('previewBatch()');assert.deepStrictEqual(req[0],{ids:[1,2],action,patch:{},preview:true});app.window.confirm=message=>{assert(action!=='delete'||message.includes('不可恢复'));return false};await ex('applyBatch()');assert.strictEqual(req.length,1)}
+    for(const action of ['delete','enable','disable']){resetBatch(action);let req=[];app.api=async(p,o)=>{req.push(JSON.parse(o.body));return {updated:[{id:1,name:'A'}],skipped:[]}};await ex('previewBatch()');assert.deepStrictEqual(req[0],{ids:[1],action,patch:{},preview:true});app.window.confirm=message=>{assert(action!=='delete'||message.includes('不可恢复'));return false};await ex('applyBatch()');assert.strictEqual(req.length,1)}
     resetBatch();app.api=async()=>({updated:[{id:1}]});await ex('previewBatch()');q('#batchEnd').value='14:00';app.window.confirm=()=>{throw new Error('选项变化不应确认')};await ex('applyBatch()');assert(q('#batchApplyBtn').disabled);
   });
   await test('批量失败释放按钮且账号切换忽略旧预览',async()=>{
@@ -761,7 +869,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     let done;app.api=()=>new Promise(r=>done=r);const pending=ex('previewBatch()');ex("selectedAccount='second';accountEpoch++;batchBusy=false;invalidateBatchPreview()");done({updated:[{id:1,name:'旧任务'}]});await pending;assert.strictEqual(ex('batchPreview'),null);assert(!q('#batchResult').textContent.includes('旧任务'));ex("selectedAccount='default';accountEpoch++");
   });
   await test('导出全部与选中任务使用Blob下载且无秘密历史字段',async()=>{
-    const data=mockConfig();let req=[];app.api=async(p,o)=>{req.push([p,o]);return data};ex('selectedAutoIds=new Set([1,2])');await ex('exportConfig(false)');await ex('exportConfig(true)');assert.strictEqual(req[0][0],'/api/tasks/export');assert.strictEqual(req[0][1].method,undefined);assert.deepStrictEqual(JSON.parse(req[1][1].body),{ids:[1,2]});
+    const data=mockConfig();let req=[];app.api=async(p,o)=>{req.push([p,o]);return data};ex('selectedAutoIds=new Set([1,2])');await ex('exportConfig(false)');await ex('exportConfig(true)');assert.strictEqual(req[0][0],'/api/tasks/export');assert.strictEqual(req[0][1].method,undefined);assert.deepStrictEqual(JSON.parse(req[1][1].body),{ids:[1]});
     const blob=fullCalls.filter(c=>c[0]==='blob').at(-1)[1];assert.deepStrictEqual(JSON.parse(await blob.text()),data);assert(downloaded.at(-1).clicked);assert(downloaded.at(-1).removed);
     for(const field of ['api_key','api_hash','api_id','phone','session','history','last_at','ai_key']){app.unsafe={...data,[field]:'should-not-leave'};assert.throws(()=>ex('assertSafeConfig(unsafe)'),/拒绝处理/)}
     const n=downloaded.length;app.api=async()=>({...data,session:'mock-session'});await ex('exportConfig(false)');assert.strictEqual(downloaded.length,n);assert(!q('#configExportAll').disabled);
@@ -844,13 +952,22 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     app.window.confirm=()=>true;app.api=async(p,o)=>{requests.push([p,o]);return {ok:true,tested:true}};app.loadAutos=async()=>{};
     await ex('testAuto(77)');assert.deepStrictEqual(requests.map(x=>x[0]),['/api/autos/77/test']);assert.strictEqual(requests[0][1].method,'POST');assert.strictEqual(ex('autoTestBusy.size'),0);app.window.confirm=()=>false;
   });
+  await test('按钮三模式保存回填且只读试运行不要求确认',async()=>{
+    for(const id of ['sButtonMode','sPopupSuccess','sPopupFail','trButtonMode','brButtonMode','lkButtonMode','crButtonMode'])assert(html.includes('id="'+id+'"'));
+    assert(html.includes('AI 模式')&&html.includes('AI 兜底')&&html.includes('脚本模式（默认）'));
+    ex("selectedAccount='replay';accountEpoch++;autos=[{id:61,type:'signin',name:'回放签到',enabled:1,target:'@bot',button_mode:'fallback'}];autoReplayBusy.clear();autoReplayResults.clear()");
+    const requests=[];app.api=async(p,o)=>{requests.push([p,o]);return {ok:true,dry_run:true,task:'回放签到',type:'signin',button_mode:'fallback',plan:['发送签到指令','按fallback模式选择按钮'],sources:[{target:'@bot',messages:[{id:8,text:'请选择功能',buttons:['Check now'],script_match:'',ai_needed:true,trigger_match:null}]}],notice:'只读试运行未发送消息、未点击按钮、未调用 AI'}};
+    await ex("replayAuto(61,accountContext())");assert.strictEqual(requests[0][0],'/api/autos/61/replay');assert.strictEqual(requests[0][1].method,'POST');assert(ex('autoReplayResults.get(61)').includes('执行时需要 AI'));assert(ex('autoReplayResults.get(61)').includes('未调用 AI'));assert.strictEqual(ex('autoReplayBusy.size'),0);
+    ex("watchedGroups=[];aiProviders=[{id:'0123456789abcdef',enabled:true}];editAuto=null;cancelAutoEdit('signin')");q('#sName').value='模式';q('#sTarget').value='@bot';q('#sCmd').value='/sign';q('#sClickBtn').checked=true;q('#sButtonMode').value='ai';let body;app.api=async(_p,o)=>{body=JSON.parse(o.body);return {ok:true,id:62}};app.loadAutos=async()=>{};await ex("saveAuto('signin')");assert.strictEqual(body.button_mode,'ai');
+    ex("autos=[{id:62,type:'signin',name:'模式',target:'@bot',command:'/sign',click_btn:1,button_mode:'fallback',enabled:0,win_start:'08:00',win_end:'12:00'}];editAutoItem(62)");assert.strictEqual(q('#sButtonMode').value,'fallback');
+  });
   await test('群链接抢注表单与凭据分离保存，任务体不含安全码',async()=>{
-    const form=html.slice(html.indexOf('id="af-link_register"'),html.indexOf('id="af-custom"'));
+    const form=formOf('link_register');
     for(const id of ['lkName','lkGroups','lkButton','lkReady','lkExisting','lkUser','lkSecret','lkMode','lkLimit','lkWwait','lkSuccess','lkFail','lkGroupReply','lkGroupReplyText','lkGroupReplyDelay','lkTimeout'])assert(form.includes('id="'+id+'"'));
     assert(!form.includes('id="lkTarget"'));assert(form.includes('start=服务名-天数-Register_代码'));
     assert(form.includes('type="password"')&&form.includes('串行接力')&&form.includes('随机一条'));
     ex("selectedAccount='default';accountEpoch++;editAuto=null;editAutoAccount=null;cancelAutoEdit('link_register')");
-    assert.strictEqual(q('#lkAiFlock').checked,false);assert.strictEqual(q('#lkAiFlockMinutes').value,'5');assert.strictEqual(q('#lkAiFlockPrompt').value,ex('DEFAULT_REGISTRATION_AI_FLOCK_PROMPT'));assert.deepStrictEqual(['6','120','3000','200'].map((v,i)=>q('#lkAiFlock'+['ContextMessages','MessageChars','SkillChars','MaxTokens'][i]).value),['6','120','3000','200']);assert(ex('DEFAULT_REGISTRATION_AI_FLOCK_PROMPT').includes('NO_REPLY'));assert.strictEqual((html.match(/只输出聊天内容或NO_REPLY。<\/textarea>/g)||[]).length,3);
+    assert.strictEqual(q('#lkAiFlock').checked,false);assert.strictEqual(q('#lkAiFlockMinutes').value,'5');assert.strictEqual(q('#lkAiFlockPrompt').value,ex('DEFAULT_REGISTRATION_AI_FLOCK_PROMPT'));assert.deepStrictEqual(['15','400','8000','600'].map((v,i)=>q('#lkAiFlock'+['ContextMessages','MessageChars','SkillChars','MaxTokens'][i]).value),['15','400','8000','600']);assert(ex('DEFAULT_REGISTRATION_AI_FLOCK_PROMPT').includes('NO_REPLY'));assert.strictEqual((html.match(/只输出聊天内容。<\/textarea>/g)||[]).length,3);
     app.providerFixture=[{id:'0123456789abcdef',note:'AI',enabled:true},{id:'fedcba9876543210',note:'备用',enabled:true}];ex("aiProviders=providerFixture;registrationAIProviderSel.lk=new Set(['0123456789abcdef','fedcba9876543210'])");q('#lkAiFlock').checked=true;q('#lkAiFlockPrompt').value='注册成功人格';q('#lkAiFlockReaction').value='👍';
     q('#lkName').value='链接抢注';q('#lkButton').value='注册';
     q('#lkReady').value='已进入注册状态';q('#lkExisting').value='已有号';q('#lkSuccess').value='注册成功';q('#lkUser').value='测试用户';q('#lkSecret').value='测试安全码';
@@ -861,7 +978,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert.deepStrictEqual(requests.map(x=>x[0]),['/api/autos','/api/autos/88/link-credential']);
     const body=JSON.parse(requests[0][1].body);
     assert(!('lkUser' in body)&&!('link_secret' in body)&&!JSON.stringify(body).includes('测试安全码'));
-    assert.deepStrictEqual(body,{type:'link_register',name:'链接抢注',groups:'',btn_text:'注册',keywords:'已进入注册状态',success_kw:'注册成功',fail_kw:'',link_mode:1,link_limit:3,link_wait:6,result_timeout:30,retries:0,existing_kw:'已有号',success_reply_enabled:1,success_reply_text:'拿下',success_reply_delay:7,ai_flock_enabled:1,ai_flock_minutes:5,ai_flock_prompt:'注册成功人格',ai_flock_provider_ids:'0123456789abcdef,fedcba9876543210',ai_flock_reaction:'👍',ai_flock_context_messages:6,ai_flock_message_chars:120,ai_flock_skill_chars:3000,ai_flock_max_tokens:200});
+    assert.deepStrictEqual(body,{type:'link_register',name:'链接抢注',groups:'',btn_text:'注册',button_mode:'script',keywords:'已进入注册状态',success_kw:'注册成功',fail_kw:'',link_mode:1,link_limit:3,link_wait:6,result_timeout:30,retries:0,existing_kw:'已有号',success_reply_enabled:1,success_reply_text:'拿下',success_reply_delay:7,ai_flock_enabled:1,ai_flock_minutes:5,ai_flock_prompt:'注册成功人格',ai_flock_provider_ids:'0123456789abcdef,fedcba9876543210',ai_flock_reaction:'👍',ai_flock_context_messages:15,ai_flock_message_chars:400,ai_flock_skill_chars:8000,ai_flock_max_tokens:600,ai_flock_knowledge_chars:2000,ai_flock_knowledge_on_demand:0});
     assert.deepStrictEqual(JSON.parse(requests[1][1].body),{user:'测试用户',secret:'测试安全码'});
   });
   await test('群链接抢注测试按钮调用测试接口',async()=>{
@@ -870,7 +987,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     await ex('testAuto(88)');assert.deepStrictEqual(requests.map(x=>x[0]),['/api/autos/88/test']);assert.strictEqual(ex('autoTestBusy.size'),0);app.window.confirm=()=>false;
   });
   await test('群按钮开注使用实测模板保存触发条件和成功群回复',async()=>{
-    const form=html.slice(html.indexOf('id="af-button_register"'),html.indexOf('id="af-link_register"'));
+    const form=formOf('button_register');
     assert(form.includes('brAnnouncement')&&form.includes('brAnnouncementButton'));
     assert(!form.includes('history_first')&&!form.includes('关闭弹窗重试'));
     ex("selectedAccount='default';accountEpoch++;cancelAutoEdit('button_register')");
@@ -908,7 +1025,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert.strictEqual(q('#crGroup').value,'');assert.strictEqual(q('#crMode').value,'1');
     assert.strictEqual(q('#crWait').value,'3');assert.strictEqual(q('#crExisting').value,'无法启用续期功能');
     assert.strictEqual(q('#crGroupReply').checked,false);
-    q('#crName').value='兑换码任务';q('#crUser').value='tester';q('#crSecret').value='test-secret';ex("registrationAIProviderSel.cr=new Set(['fedcba9876543210'])");q('#crAiFlockReaction').value='👏';q('#crAiFlockContextMessages').value='20';q('#crAiFlockMessageChars').value='500';q('#crAiFlockSkillChars').value='10000';q('#crAiFlockMaxTokens').value='1000';
+    q('#crName').value='兑换码任务';q('#crUser').value='tester';q('#crSecret').value='test-secret';ex("registrationAIProviderSel.cr=new Set(['fedcba9876543210'])");q('#crAiFlockReaction').value='👏';q('#crAiFlockContextMessages').value='50';q('#crAiFlockMessageChars').value='2000';q('#crAiFlockSkillChars').value='200000';q('#crAiFlockMaxTokens').value='8192';
     const requests=[];app.api=async(p,o)=>{requests.push([p,JSON.parse(o.body)]);return {ok:true,id:100}};app.loadAutos=async()=>{};
     await ex("saveAuto('code_register')");assert.strictEqual(requests.length,0);
     q('#crGroup').value='-100123';q('#crBot').value='@fixed_bot';
@@ -917,12 +1034,12 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert.strictEqual(body.type,'code_register');assert.strictEqual(body.groups,'-100123');assert.strictEqual(body.target,'@fixed_bot');
     assert.strictEqual(body.link_limit,4);assert.strictEqual(body.link_mode,1);assert.strictEqual(body.link_wait,3);
     assert.strictEqual(body.ai_flock_provider_ids,'fedcba9876543210');assert.strictEqual(body.ai_flock_reaction,'👏');
-    assert.deepStrictEqual([body.ai_flock_context_messages,body.ai_flock_message_chars,body.ai_flock_skill_chars,body.ai_flock_max_tokens],[20,500,10000,1000]);
+    assert.deepStrictEqual([body.ai_flock_context_messages,body.ai_flock_message_chars,body.ai_flock_skill_chars,body.ai_flock_max_tokens],[50,2000,200000,8192]);
     assert.strictEqual(body.enabled,0);assert(!JSON.stringify(body).includes('test-secret'));
     assert.strictEqual(requests[1][0],'/api/autos/100/link-credential');
   });
   await test('兑换码编辑保留单群Bot和零延迟，不回填安全码',async()=>{
-    ex("selectedAccount='default';accountEpoch++;autos=[{id:100,type:'code_register',name:'兑换码',groups:'-100456',target:'@another_bot',btn_text:'注册',keywords:'注册状态',success_kw:'成功',enabled:1,link_credential_set:true,link_mode:0,link_limit:4,link_wait:3,success_reply_enabled:1,success_reply_text:'拿下',success_reply_delay:0}];editAutoItem(100)");
+    ex("selectedAccount='default';accountEpoch++;watchedGroups=[{chat_id:'-100456',name:'有效群'}];watchedGroupsLoaded=true;autos=[{id:100,type:'code_register',name:'兑换码',groups:'-100456',target:'@another_bot',btn_text:'注册',keywords:'注册状态',success_kw:'成功',enabled:1,link_credential_set:true,link_mode:0,link_limit:4,link_wait:3,success_reply_enabled:1,success_reply_text:'拿下',success_reply_delay:0}];editAutoItem(100)");
     assert.strictEqual(q('#crGroup').value,'-100456');assert.strictEqual(q('#crBot').value,'@another_bot');
     assert.strictEqual(q('#crSecret').value,'');assert.strictEqual(q('#crReplyDelay').value,'0');
     const requests=[];app.api=async(p,o)=>{requests.push([p,JSON.parse(o.body)]);return {ok:true}};
@@ -931,9 +1048,14 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert.strictEqual(requests[0][1].success_reply_delay,0);assert.strictEqual(requests[0][1].enabled,1);
   });
   await test('三种注册成功水群限制控件范围一致，重置恢复默认且非法整数不请求',async()=>{
-    const specs=[['ContextMessages','6','1','20'],['MessageChars','120','40','500'],['SkillChars','3000','0','10000'],['MaxTokens','200','50','1000']];
+    const specs=[['ContextMessages','15','1','50'],['MessageChars','400','40','2000'],['SkillChars','8000','0','200000'],['MaxTokens','600','50','8192']];
     for(const prefix of ['br','lk','cr'])for(const [suffix,def,min,max] of specs){const input=html.match(new RegExp('<input\\b[^>]*id="'+prefix+'AiFlock'+suffix+'"[^>]*>'))[0];for(const attr of ['value="'+def+'"','min="'+min+'"','max="'+max+'"','step="1"'])assert(input.includes(attr))}
     let sent=0;app.api=async()=>{sent++;return {}};for(const [type,prefix] of [['button_register','br'],['link_register','lk'],['code_register','cr']]){ex("cancelAutoEdit('"+type+"')");q('#'+prefix+'AiFlockContextMessages').value='1.5';await ex("saveAuto('"+type+"')");assert(q('#toast').textContent.includes('整数'));assert.strictEqual(sent,0);ex("cancelAutoEdit('"+type+"')");assert.deepStrictEqual(specs.map(([suffix])=>q('#'+prefix+'AiFlock'+suffix).value),specs.map(x=>x[1]))}
+  });
+  await test('四个AI水群表情选择器共享真实按钮并支持选择清除编辑重置',async()=>{
+    ex('renderAIFlockReactionPickers()');const fields=['waterAiJobReaction','brAiFlockReaction','lkAiFlockReaction','crAiFlockReaction'];for(const field of fields){const box=q('#'+field+'Picker');assert.strictEqual(box.children.length,ex('EMOJIS.length'));const first=box.children[0];assert.strictEqual(first.type,'button');assert.strictEqual(first.getAttribute('aria-pressed'),'false');assert(!first.attributes.onclick);ex(`toggleAIFlockReaction('${field}','👍')`);assert.strictEqual(q('#'+field).value,'👍');assert.strictEqual(first.getAttribute('aria-pressed'),'true');ex(`toggleAIFlockReaction('${field}','👍')`);assert.strictEqual(q('#'+field).value,'');assert.strictEqual(first.getAttribute('aria-pressed'),'false');q('#'+field).value='🧠';ex(`syncAIFlockReactionPicker('${field}')`);assert(!box.children.some(button=>button.getAttribute('aria-pressed')==='true'))}
+    ex("setRegistrationAIFlock('br','','🔥');waterAIJobs=[{id:301,name:'表情任务',groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'',reaction:'👏'}];openWaterAIJobForm(301)");assert.strictEqual(q('#brAiFlockReaction').value,'🔥');assert(q('#brAiFlockReactionPicker').children.some(button=>button.dataset.reactionEmoji==='🔥'&&button.getAttribute('aria-pressed')==='true'));assert.strictEqual(q('#waterAiJobReaction').value,'👏');assert(q('#waterAiJobReactionPicker').children.some(button=>button.dataset.reactionEmoji==='👏'&&button.getAttribute('aria-pressed')==='true'));
+    ex("resetWaterAIJobForm();cancelAutoEdit('button_register');cancelAutoEdit('link_register');cancelAutoEdit('code_register')");for(const field of fields)assert.strictEqual(q('#'+field).value,'');assert(html.includes('.ai-flock-emojis button{min-width:44px!important;min-height:44px!important'));assert.strictEqual((html.match(/const EMOJIS=/g)||[]).length,1);for(const id of ['waterAiJobReactionPicker','brAiFlockReactionPicker','lkAiFlockReactionPicker','crAiFlockReactionPicker']){const fragment=html.slice(html.indexOf('id="'+id+'"'),html.indexOf('</div>',html.indexOf('id="'+id+'"')));assert(!fragment.includes('onclick='))}
   });
   await test('结构化detail及Pydantic数组提取人话，不输出input或对象',async()=>{
     for(const [detail,want] of [[{message:'当前账号任务不存在',ids:[42],input:'mock-secret'},'当前账号任务不存在'],[[{msg:'Field required',input:'mock-secret',loc:['body','name']}],'请补齐必填项'],[[{msg:'Input should be a valid integer',input:'mock-secret'}],'请填写有效的整数']]){
@@ -951,7 +1073,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert.strictEqual(ex('configData.automations[0].name'),'最新配置');assert.strictEqual(ex('buildImportRequest().mode'),'replace');assert(!q('#configPreviewBtn').disabled);assert(q('#configApplyBtn').disabled);
   });
   await test('签到窗口时区改变后旧批量预览必须重新确认',async()=>{
-    resetBatch();q('#sTz').value='UTC';let sent=0;app.api=async()=>{sent++;return {updated:[{id:1,name:'窗口任务'}],skipped:[]}};await ex('previewBatch()');assert(q('#batchResult').textContent.includes('时区：UTC'));assert(q('#batchResult').textContent.includes('签到窗口 08:00–12:00'));
+    resetBatch();ex("autos=[{id:1,type:'signin'}];selectAllAutos(true)");q('#sTz').value='UTC';let sent=0;app.api=async()=>{sent++;return {updated:[{id:1,name:'窗口任务'}],skipped:[]}};await ex('previewBatch()');assert(q('#batchResult').textContent.includes('时区：UTC'));assert(q('#batchResult').textContent.includes('签到窗口 08:00–12:00'));
     q('#sTz').value='Asia/Shanghai';app.window.confirm=()=>{throw new Error('改变时区不得提交旧预览')};await ex('applyBatch()');assert.strictEqual(sent,1);assert(q('#batchApplyBtn').disabled);
   });
   await test('头像冻结账号查询参数无token，缓存自定义兜底及旧图片隔离',async()=>{
@@ -1041,7 +1163,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
   });
   await test('统一签到默认禁用00:05–00:41且字段收起，旧设置缺失兼容',async()=>{
     ex('signinGlobalDirty=false;acceptSigninGlobalSettings({})');assert.strictEqual(ex('signinGlobal.enabled'),false);assert.strictEqual(q('#signinGlobalStart').value,'00:05');assert.strictEqual(q('#signinGlobalEnd').value,'00:41');assert(!q('#signinGlobalEnabled').checked);
-    assert(/id="signinGlobalFields" class="hidden"/.test(html));assert(html.includes('所有任务及失败重试轮完成后只推送一条汇总'));const button=q('global-toggle');app.globalButton=button;ex('toggleSigninGlobalFields(globalButton)');assert.strictEqual(button.getAttribute('aria-expanded'),'true');ex('toggleSigninGlobalFields(globalButton)');assert.strictEqual(button.getAttribute('aria-expanded'),'false');
+    assert(/id="signinGlobalFields" class="hidden"/.test(html));assert(html.includes('所有跟随统一的任务及失败重试轮完成后只推送一条汇总'));assert(html.includes('独立任务完全排除在统一窗口和统一汇总之外'));const button=q('global-toggle');app.globalButton=button;ex('toggleSigninGlobalFields(globalButton)');assert.strictEqual(button.getAttribute('aria-expanded'),'true');ex('toggleSigninGlobalFields(globalButton)');assert.strictEqual(button.getAttribute('aria-expanded'),'false');
   });
   await test('统一设置独立POST只保存三个keys，不连带AI或其他设置',async()=>{
     ex("selectedAccount='default';accountEpoch++;signinGlobalDirty=true;signinGlobalBusy=false");q('#signinGlobalEnabled').checked=true;q('#signinGlobalStart').value='00:05';q('#signinGlobalEnd').value='00:41';q('#aiProviderKey').value='mock-unsaved-key';q('#aiProviderBase').value='mock-unsaved-base';let requests=[];
@@ -1052,9 +1174,14 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     ex("batchPreview={old:true};signinGlobalDirty=false;acceptSigninGlobalSettings({signin_global_enabled:'1',signin_global_start:'01:00',signin_global_end:'01:30'})");assert.strictEqual(ex('batchPreview'),null);assert(ex("describeBatchPatch({win_start:'08:00',win_end:'12:00'})").includes('此修改暂不生效'));
   });
   await test('统一时间启用禁用切换保留原任务窗口，摘要使用有效时间与兼容缺字段',async()=>{
-    app.iconTask.win_start='08:00';app.iconTask.win_end='12:00';ex('autos=[iconTask];editAutoItem(42)');assert(q('#sWinStart').disabled&&q('#sWinEnd').disabled);assert.strictEqual(q('#sWinStart').value,'08:00');assert.strictEqual(q('#sWinEnd').value,'12:00');assert(q('#sWindowHint').textContent.includes('原窗口保留但不生效'));
+    app.iconTask.win_start='08:00';app.iconTask.win_end='12:00';ex('autos=[iconTask];editAutoItem(42)');assert(q('#sWinStart').disabled&&q('#sWinEnd').disabled);assert.strictEqual(q('#sWinStart').value,'08:00');assert.strictEqual(q('#sWinEnd').value,'12:00');assert(q('#sWindowHint').textContent.includes('第一时间段跟随统一'));
     assert(ex('autoDesc(iconTask)').includes('跟随统一 01:00–01:30'));app.windowTask={...app.iconTask,uses_global_window:true,effective_win_start:'02:00',effective_win_end:'02:10'};assert.strictEqual(ex('autoWindow(windowTask)'),'跟随统一 02:00–02:10');
     ex("signinGlobalDirty=false;acceptSigninGlobalSettings({signin_global_enabled:'0'});syncSigninWindow()");assert(!q('#sWinStart').disabled);assert.strictEqual(q('#sWinStart').value,'08:00');assert(ex('autoWindow(iconTask)').includes('单任务窗口 08:00–12:00'));
+  });
+  await test('签到第二时间段可叠加统一时间，独立开关可永久排除统一窗口',async()=>{
+    ex("signinGlobal={enabled:true,start:'00:09',end:'00:28'};editAuto=null;cancelAutoEdit('signin')");q('#sName').value='AskAsh';q('#sTarget').value='@ask';q('#sCmd').value='/start';q('#sSecondEnabled').checked=true;q('#sSecondStart').value='12:09';q('#sSecondEnd').value='12:28';ex('syncSigninTaskWindows()');assert(q('#sWinStart').disabled);assert(!q('#sSecondWindow').classList.contains('hidden'));assert(q('#sWindowHint').textContent.includes('00:09–00:28')&&q('#sWindowHint').textContent.includes('12:09–12:28'));
+    let body;app.api=async(_p,o)=>{body=JSON.parse(o.body);return {ok:true,id:91}};app.loadAutos=async()=>{};await ex("saveAuto('signin')");assert.strictEqual(body.signin_independent,0);assert.strictEqual(body.signin_second_enabled,1);assert.strictEqual(body.signin_second_start,'12:09');assert.strictEqual(body.signin_second_end,'12:28');
+    ex("autos=[{id:91,type:'signin',name:'AskAsh',target:'@ask',command:'/start',win_start:'08:00',win_end:'12:00',signin_independent:1,signin_second_enabled:1,signin_second_start:'13:00',signin_second_end:'13:30',uses_global_window:false,effective_windows:[['08:00','12:00'],['13:00','13:30']],signin_done_slots:1,signin_total_slots:2,enabled:1}];editAutoItem(91)");assert(q('#sIndependent').checked);assert(!q('#sWinStart').disabled);assert(ex('autoWindow(autos[0])').includes('独立任务窗口 08:00–12:00 + 13:00–13:30'));assert(ex('autoDesc(autos[0])').includes('今日 1/2 次'));ex("signinGlobal={enabled:false,start:'00:05',end:'00:41'};cancelAutoEdit('signin')");
   });
   await test('统一时间非法HH:MM不请求，保存失败恢复按钮且不强制run或停任务',async()=>{
     let sent=0;app.api=async()=>{sent++;throw new Error('<script>mock save failure')};q('#signinGlobalStart').value='24:00';await ex('saveSigninGlobal()');assert.strictEqual(sent,0);
@@ -1096,6 +1223,42 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
   await test('图标选择换账号清弹窗，旧选择闭包不能改同ID新任务表单',async()=>{
     app.iconsFixture={libraries:[{id:'l',enabled:true}],icons:[{name:'icon',url:'https://dummy.invalid/old.png',library_id:'l'}],errors:[]};ex('acceptIcons(iconsFixture);openIconPicker()');q('#iconSearch').value='';ex('resetIconSearch()');const old=q('#iconGrid').children[0];
     ex("switchAccount('c');autos=[cardTask];editAutoItem(7)");q('#sIconUrl').value='https://dummy.invalid/current.png';old.listeners.click();assert.strictEqual(q('#sIconUrl').value,'https://dummy.invalid/current.png');assert(!q('#iconPicker').classList.contains('show'));assert.strictEqual(ex('iconPickerAccount'),null);
+  });
+  await test('记忆页展示学习过滤统计',async()=>{
+    const summary=String(ex("learningFilterSummary({total:42,kept:30,dropped:{过于简短:8,纯语气词:4},would_drop:5})"));
+    assert(summary.includes('共 42 条'));assert(summary.includes('丢弃 12'));assert(summary.includes('低信息量标记 5'));
+    assert(String(ex("learningFilterSummary(null)")).includes('尚未采集'));
+    assert(html.includes("learningFilterSummary(data.filter)"));
+    assert(html.includes('loadLearningFilter()'));
+    assert(html.includes('/api/ai/flock/learning-filter'));
+    assert(html.includes('memoryPinned'));
+    assert(html.includes('只看已固定'));
+    assert(html.includes('只看未固定'));
+    assert(html.includes('pinned_count'));
+    assert(html.includes('把这段记忆钉住'));
+    assert(html.includes('peopleNormalEnabled'));
+    assert(html.includes('peopleWhiteEnabled'));
+    assert(html.includes('peopleHistoryEnabled'));
+    assert(html.includes('近到远翻群历史'));
+    assert(html.includes('waterAiPeopleRefHint'));
+    assert(html.includes('peopleHistoryStart'));
+    assert(html.includes('消息记忆'));
+    assert(html.includes('人物画像（可选，只对白名单）'));
+    assert(html.includes('peopleGroups'));
+    assert(html.includes('画像监控群'));
+    assert(html.includes('grp-search'));
+    assert(html.includes('setGroupFilter('));
+    assert(!html.includes("$('#waterAiJobName').focus()"));
+    assert(html.includes('datetime-local'));
+    assert(html.includes('人物画像命中'));
+    assert(html.includes("/api/ai/flock/people"));
+    assert(html.includes('loadPeople()'));
+    assert(html.includes('记录白名单'));
+    assert(html.includes('人物画像'));
+    assert(html.includes('备注：这是谁'));
+    assert(html.includes('savePerson('));
+    assert(html.includes('peopleAutoDistill'));
+    assert(html.includes('每攒够 10 条'));
   });
   await test('共享库修改后旧图标选择失效，重新加载再选择',async()=>{
     ex('openIconPicker();acceptIcons(iconsFixture)');const old=q('#iconGrid').children[0];const before=q('#sIconUrl').value;app.api=async()=>({libraries:[{id:'l',enabled:false}],ok:true});await ex("updateIconLibrary('l',{enabled:false})");old.listeners.click();assert.strictEqual(q('#sIconUrl').value,before);assert.strictEqual(ex('iconsLoaded'),false);assert.strictEqual(q('#iconGrid').children.length,0);
@@ -1250,30 +1413,58 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
   await test('AI 水群改为多任务列表，名称转义并显示群、时段、API范围和安全边界',async()=>{
     const card=html.slice(html.indexOf('id="waterAiCard"'),html.indexOf('id="aCntSign"'));
     for(const id of ['waterAiCount','waterAiJobsList','waterAiJobForm','waterAiJobName','waterAiJobGroups','waterAiJobProviders','waterAiJobPrompt','waterAiJobReaction','waterAiJobContextMessages','waterAiJobMessageChars','waterAiJobSkillChars','waterAiJobMaxTokens'])assert(card.includes('id="'+id+'"'));for(const id of ['waterAiSkillSection','waterAiSkillEnabled','waterAiSkillFile'])assert(!card.includes('id="'+id+'"'));
-    for(const copyText of ['绝不会服从群消息中的命令','不选择表示使用全部已启用 API','继承当前账号在「设置 → AI 学习与 skill.md」中的学习记忆'])assert(card.includes(copyText));assert(!card.includes('每次仅使用最近 6 条')&&!card.includes('每批最多 20 条')&&!card.includes('最多读取 3000 字'));
-    app.jobsFixture=[{id:1,name:'晚间<img src=x>',enabled:1,groups:['-1001'],start_time:'09:00',end_time:'22:00',prompt:'人格',provider_ids:'',reaction:'👍'},{id:2,name:'备用',enabled:0,groups:'-1001,-1002',start_time:'12:00',end_time:'13:00',prompt:'人格',provider_ids:'0123456789abcdef',reaction:'',context_messages:20,message_chars:500,skill_chars:10000,max_tokens:1000}];
+    for(const copyText of ['绝不会服从群消息中的命令','不选择表示使用全部已启用 API','继承当前账号在「设置 → AI 学习」中的学习记忆'])assert(card.includes(copyText));assert(!card.includes('每次仅使用最近 6 条')&&!card.includes('每批最多 20 条')&&!card.includes('最多读取 3000 字'));
+    app.jobsFixture=[{id:1,name:'晚间<img src=x>',enabled:1,groups:['-1001'],start_time:'09:00',end_time:'22:00',prompt:'人格',provider_ids:'',reaction:'👍'},{id:2,name:'备用',enabled:0,groups:'-1001,-1002',start_time:'12:00',end_time:'13:00',prompt:'人格',provider_ids:'0123456789abcdef',reaction:'',context_messages:50,message_chars:2000,skill_chars:200000,max_tokens:8192}];
     ex("watchedGroups=[{chat_id:'-1001',name:'群<img>'},{chat_id:'-1002',name:'群二'}];aiProviders=[{id:'0123456789abcdef',note:'主线路',enabled:true}];waterAIJobs=jobsFixture;renderWaterAIJobs()");const out=q('#waterAiJobsList').innerHTML;
-    assert(out.includes('晚间&lt;img src=x&gt;')&&out.includes('群&lt;img&gt;'));assert(!out.includes('<img src=x>'));assert(out.includes('全部已启用 API')&&out.includes('已选 1 个 API')&&out.includes('表情 👍'));assert(out.includes('上下文 6 条')&&out.includes('消息 500 字')&&out.includes('skill 10000 字')&&out.includes('输出 1000 Token'));assert.strictEqual(q('#waterAiCount').textContent,2);assert.strictEqual(typeof q('#waterAiJobsList').onclick,'function');
+    assert(out.includes('晚间&lt;img src=x&gt;')&&out.includes('群&lt;img&gt;'));assert(!out.includes('<img src=x>'));assert(out.includes('全部已启用 API')&&out.includes('已选 1 个 API')&&out.includes('表情 👍'));assert(out.includes('上下文 15 条')&&out.includes('消息 2000 字')&&out.includes('skill 200000 字')&&out.includes('输出 8192 Token'));assert.strictEqual(q('#waterAiCount').textContent,2);assert.strictEqual(typeof q('#waterAiJobsList').onclick,'function');
     assert(html.includes('.water-ai-actions button{flex:1 1 88px}')&&html.includes('.water-ai-limits{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))')&&html.includes('@media(max-width:340px)'));
   });
-  await test('学习与skill界面仅位于设置并紧邻AI API卡片',async()=>{
+  await test('AI学习界面仅位于设置并紧邻AI API卡片',async()=>{
     const settings=html.slice(html.indexOf('<section id="tab-settings">'),html.indexOf('</section>',html.indexOf('<section id="tab-settings">'))),water=html.slice(html.indexOf('id="waterAiCard"'),html.indexOf('id="aCntSign"'));
-    assert.strictEqual((html.match(/id="flockLearningCard"/g)||[]).length,1);assert.strictEqual((html.match(/id="waterAiSkillSection"/g)||[]).length,1);assert(settings.includes('id="flockLearningCard"')&&settings.includes('id="waterAiSkillSection"'));assert(!water.includes('id="waterAiSkillSection"'));assert(settings.indexOf('id="foldAiProviders"')<settings.indexOf('id="flockLearningCard"'));assert(settings.indexOf('id="flockLearningCard"')<settings.indexOf('id="migrationCard"'));
+    assert.strictEqual((html.match(/id="flockLearningCard"/g)||[]).length,1);assert.strictEqual((html.match(/id="waterAiSkillSection"/g)||[]).length,1);assert(settings.includes('id="flockLearningCard"')&&settings.includes('id="waterAiSkillSection"')&&settings.includes('>AI 学习</span>'));assert(!water.includes('id="waterAiSkillSection"'));assert(settings.indexOf('id="foldAiProviders"')<settings.indexOf('id="flockLearningCard"'));assert(settings.indexOf('id="migrationCard"')<settings.indexOf('id="flockLearningCard"'));
   });
   await test('水群任务新增编辑重置及启停删除复制只调用独立CRUD接口',async()=>{
-    ex("selectedAccount='flock-a';accountEpoch++;waterAIJobs=[jobsFixture[1]];openWaterAIJobForm(2)");assert.strictEqual(q('#waterAiJobName').value,'备用');assert.strictEqual(ex("[...waterAIJobGroupSel].join(',')"),'-1001,-1002');assert.strictEqual(ex("[...waterAIJobProviderSel].join(',')"),'0123456789abcdef');assert.deepStrictEqual(['ContextMessages','MessageChars','SkillChars','MaxTokens'].map(s=>q('#waterAiJob'+s).value),['20','500','10000','1000']);
+    ex("selectedAccount='flock-a';accountEpoch++;waterAIJobs=[jobsFixture[1]];openWaterAIJobForm(2)");assert.strictEqual(q('#waterAiJobName').value,'备用');assert.strictEqual(ex("[...waterAIJobGroupSel].join(',')"),'-1001,-1002');assert.strictEqual(ex("[...waterAIJobProviderSel].join(',')"),'0123456789abcdef');assert.deepStrictEqual(['ContextMessages','MessageChars','SkillChars','MaxTokens'].map(s=>q('#waterAiJob'+s).value),['50','2000','200000','8192']);
     q('#waterAiJobName').value='更新任务';q('#waterAiJobEnabled').checked=true;q('#waterAiJobStart').value='08:00';q('#waterAiJobEnd').value='09:00';q('#waterAiJobPrompt').value='更新人格';q('#waterAiJobReaction').value='🔥';q('#waterAiJobContextMessages').value='1';q('#waterAiJobMessageChars').value='40';q('#waterAiJobSkillChars').value='0';q('#waterAiJobMaxTokens').value='50';ex("waterAIJobGroupSel=new Set(['-1001']);waterAIJobProviderSel=new Set(['0123456789abcdef'])");const requests=[];app.api=async(p,o)=>{requests.push([p,o]);return {ok:true,id:3}};app.loadWaterAIJobs=async()=>{};
-    await ex('saveWaterAIJob()');assert.strictEqual(requests[0][0],'/api/ai/flock/jobs/2');assert.strictEqual(requests[0][1].method,'PUT');assert.strictEqual(requests[0][1]._account.id,'flock-a');assert.deepStrictEqual(JSON.parse(requests[0][1].body),{name:'更新任务',enabled:1,groups:'-1001',start_time:'08:00',end_time:'09:00',prompt:'更新人格',provider_ids:'0123456789abcdef',reaction:'🔥',context_messages:1,message_chars:40,skill_chars:0,max_tokens:50});assert(q('#waterAiJobForm').classList.contains('hidden'));
-    ex('waterAIJobs=[jobsFixture[1]]');app.window.confirm=()=>true;for(const action of ['toggle','duplicate','delete'])await ex(`mutateWaterAIJob('2','${action}',accountContext())`);assert.deepStrictEqual(requests.slice(1).map(x=>[x[0],x[1].method]),[['/api/ai/flock/jobs/2','PUT'],['/api/ai/flock/jobs','POST'],['/api/ai/flock/jobs/2','DELETE']]);const duplicate=JSON.parse(requests[2][1].body);assert.strictEqual(duplicate.enabled,0);assert(duplicate.name.endsWith('副本'));assert.deepStrictEqual([duplicate.context_messages,duplicate.message_chars,duplicate.skill_chars,duplicate.max_tokens],[20,500,10000,1000]);assert(!('id' in duplicate));
-    ex('openWaterAIJobForm();resetWaterAIJobForm()');assert.strictEqual(ex('editingWaterAIJobId'),null);assert.strictEqual(ex('waterAIJobGroupSel.size'),0);assert.strictEqual(q('#waterAiJobPrompt').value,'');assert.deepStrictEqual(['ContextMessages','MessageChars','SkillChars','MaxTokens'].map(s=>q('#waterAiJob'+s).value),['6','120','3000','200']);app.window.confirm=()=>false;
+    await ex('saveWaterAIJob()');assert.strictEqual(requests[0][0],'/api/ai/flock/jobs/2');assert.strictEqual(requests[0][1].method,'PUT');assert.strictEqual(requests[0][1]._account.id,'flock-a');assert.deepStrictEqual(JSON.parse(requests[0][1].body),{name:'更新任务',enabled:1,groups:'-1001',start_time:'08:00',end_time:'09:00',prompt:'更新人格',provider_ids:'0123456789abcdef',reaction:'🔥',context_messages:1,message_chars:40,skill_chars:0,max_tokens:50,knowledge_chars:2000,knowledge_on_demand:0,end_next_day:0,min_messages:6,max_messages:8,hourly_limit:12,active_minutes:5,inactive_mode:0,budget_messages:0});assert(q('#waterAiJobForm').classList.contains('hidden'));
+    ex('waterAIJobs=[jobsFixture[1]]');app.window.confirm=()=>true;for(const action of ['toggle','duplicate','delete'])await ex(`mutateWaterAIJob('2','${action}',accountContext())`);assert.deepStrictEqual(requests.slice(1).map(x=>[x[0],x[1].method]),[['/api/ai/flock/jobs/2','PUT'],['/api/ai/flock/jobs','POST'],['/api/ai/flock/jobs/2','DELETE']]);const duplicate=JSON.parse(requests[2][1].body);assert.strictEqual(duplicate.enabled,0);assert(duplicate.name.endsWith('副本'));assert.deepStrictEqual([duplicate.context_messages,duplicate.message_chars,duplicate.skill_chars,duplicate.max_tokens],[50,2000,200000,8192]);assert(!('id' in duplicate));
+    ex('openWaterAIJobForm();resetWaterAIJobForm()');assert.strictEqual(ex('editingWaterAIJobId'),null);assert.strictEqual(ex('waterAIJobGroupSel.size'),0);assert.strictEqual(q('#waterAiJobPrompt').value,'');assert.deepStrictEqual(['ContextMessages','MessageChars','SkillChars','MaxTokens'].map(s=>q('#waterAiJob'+s).value),['15','400','8000','600']);app.window.confirm=()=>false;
+  });
+  await test('水群次日结束可保存回填复制，列表注明次日且拒绝超过24小时',async()=>{
+    app.nightFixture={id:41,name:'夜间',enabled:1,groups:'-1001',start_time:'22:00',end_time:'02:00',end_next_day:1,prompt:'聊天',provider_ids:'0123456789abcdef'};
+    ex("selectedAccount='overnight';accountEpoch++;watchedGroups=[{chat_id:'-1001',name:'群'}];aiProviders=[{id:'0123456789abcdef',enabled:true}];waterAIJobs=[nightFixture];openWaterAIJobForm(41);renderWaterAIJobs()");assert(q('#waterAiJobEndNextDay').checked);assert(q('#waterAiJobsList').innerHTML.includes('22:00–次日 02:00'));
+    let requests=[];app.api=async(p,o)=>{requests.push([p,o]);return {ok:true}};app.loadWaterAIJobs=async()=>{};await ex('saveWaterAIJob()');assert.strictEqual(JSON.parse(requests[0][1].body).end_next_day,1);await ex("mutateWaterAIJob('41','duplicate')");assert.strictEqual(JSON.parse(requests[1][1].body).end_next_day,1);
+    for(const [start,end,nextDay] of [['22:00','02:00',false],['10:00','11:00',true],['25:00','02:00',true]]){ex("openWaterAIJobForm();waterAIJobGroupSel=new Set(['-1001'])");q('#waterAiJobName').value='无效';q('#waterAiJobStart').value=start;q('#waterAiJobEnd').value=end;q('#waterAiJobEndNextDay').checked=nextDay;requests=[];await ex('saveWaterAIJob()');assert.strictEqual(requests.length,0);assert(q('#toast').textContent.includes('24 小时'))}
+    ex('resetWaterAIJobForm()');assert(!q('#waterAiJobEndNextDay').checked);
   });
   await test('水群人格可留空纯skill模仿，启用但skill为空时显示后端错误',async()=>{
     const card=html.slice(html.indexOf('id="waterAiCard"'),html.indexOf('id="aCntSign"'));for(const text of ['人格提示词（可选）','留空时完全模仿账号 skill.md','填写后在主人风格上叠加该任务人格'])assert(card.includes(text));
     ex("selectedAccount='persona-empty';accountEpoch++;watchedGroups=[{chat_id:'-1001',name:'群'}];aiProviders=[{id:'0123456789abcdef',note:'线路',enabled:true}];waterAIJobs=[{id:18,name:'纯skill',enabled:1,groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'',provider_ids:'0123456789abcdef'}];openWaterAIJobForm(18)");assert.strictEqual(q('#waterAiJobPrompt').value,'');q('#waterAiJobEnabled').checked=true;let body;app.api=async(_p,o)=>{body=JSON.parse(o.body);throw new Error('启用纯 skill 模仿前请先生成或导入 skill.md')};app.loadWaterAIJobs=async()=>{};await ex('saveWaterAIJob()');assert.strictEqual(body.prompt,'');assert(q('#toast').textContent.includes('请先生成或导入 skill.md'));assert(!q('#waterAiJobForm').classList.contains('hidden'));ex('resetWaterAIJobForm()');assert.strictEqual(q('#waterAiJobPrompt').value,'');
   });
+  await test('水群预算横幅随输入更新且鲸鱼学习不改变回复预算',async()=>{
+    const card=html.slice(html.indexOf('id="waterAiCard"'),html.indexOf('id="aCntSign"'));for(const text of ['当前水群预算：任务预设 15条/400字/skill 8000字/600 Token','鲸鱼模式仅影响学习，不影响水群回复预算','学习中心：鲸鱼模式生效中，水群仍使用本任务预设'])assert(card.includes(text));ex('openWaterAIJobForm()');q('#waterAiJobContextMessages').value='9';q('#waterAiJobMessageChars').value='240';q('#waterAiJobSkillChars').value='7000';q('#waterAiJobMaxTokens').value='650';ex('renderWaterAIBudgetStatus()');assert.strictEqual(q('#waterAiJobBudgetText').textContent,'当前水群预算：任务预设 9条/240字/skill 7000字/650 Token；鲸鱼模式仅影响学习，不影响水群回复预算');ex("renderFlockSkill({flock_learning_unlimited_active:true})");assert(!q('#waterAiJobWhaleBadge').classList.contains('hidden'));ex("renderFlockSkill({flock_learning_unlimited_active:false})");assert(q('#waterAiJobWhaleBadge').classList.contains('hidden'));
+  });
+  await test('每小时发言不限制开关断开整数校验并保存为 -1',async()=>{
+    ex("selectedAccount='hourly-unlimited';accountEpoch++;watchedGroups=[{chat_id:'-1001',name:'群'}];aiProviders=[{id:'0123456789abcdef',enabled:true}];waterAIJobs=[{id:71,name:'不限',enabled:1,groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'聊',provider_ids:'0123456789abcdef',hourly_limit:-1}];openWaterAIJobForm(71)");
+    assert(q('#waterAiJobHourlyUnlimited').checked);assert(q('#waterAiJobHourlyLimit').disabled);assert.strictEqual(q('#waterAiJobHourlyLimit').value,'12');
+    let body;app.api=async(_p,o)=>{body=JSON.parse(o.body);return {ok:true}};app.loadWaterAIJobs=async()=>{};await ex('saveWaterAIJob()');assert.strictEqual(body.hourly_limit,-1);
+    ex('resetWaterAIJobForm()');assert(!q('#waterAiJobHourlyUnlimited').checked);assert(!q('#waterAiJobHourlyLimit').disabled);
+    q('#waterAiJobName').value='正常';q('#waterAiJobPrompt').value='聊';ex("waterAIJobGroupSel=new Set(['-1001'])");await ex('saveWaterAIJob()');assert.strictEqual(body.hourly_limit,12);
+    ex("waterAIJobs=[{id:72,name:'不限列表',enabled:1,groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'聊',provider_ids:'0123456789abcdef',hourly_limit:-1}];renderWaterAIJobs()");assert(q('#waterAiJobsList').innerHTML.includes('每小时最多 不限 条'));
+    assert(html.includes('id="waterAiJobHourlyUnlimited"')&&html.includes('不限制每小时发言'));
+  });
   await test('水群任务限制拒绝越界和非整数且不调用接口',async()=>{
-    ex("selectedAccount='limits-job';accountEpoch++;watchedGroups=[{chat_id:'-1001',name:'群'}];aiProviders=[{id:'0123456789abcdef',enabled:true}]");let sent=0;app.api=async()=>{sent++;return {}};const invalid={ContextMessages:['0','21','1.5'],MessageChars:['39','501','40.1'],SkillChars:['-1','10001','0.5'],MaxTokens:['49','1001','NaN']};
+    ex("selectedAccount='limits-job';accountEpoch++;watchedGroups=[{chat_id:'-1001',name:'群'}];aiProviders=[{id:'0123456789abcdef',enabled:true}]");let sent=0;app.api=async()=>{sent++;return {}};const invalid={ContextMessages:['0','51','1.5'],MessageChars:['39','2001','40.1'],SkillChars:['-1','200001','0.5'],MaxTokens:['49','8193','NaN']};
     invalid.SkillChars.push('');for(const [suffix,values] of Object.entries(invalid))for(const value of values){ex('openWaterAIJobForm()');q('#waterAiJobName').value='限制';q('#waterAiJobPrompt').value='人格';ex("waterAIJobGroupSel=new Set(['-1001'])");q('#waterAiJob'+suffix).value=value;await ex('saveWaterAIJob()');assert.strictEqual(sent,0);assert(q('#toast').textContent.includes('整数'));ex('resetWaterAIJobForm()')}
+  });
+  await test('多条API水群任务重新载入保留逗号分隔ID，不会误报全部失效',async()=>{
+    app.loadWaterAIJobs=realWaterJobsLoader;
+    ex("selectedAccount='multi-api';accountEpoch++;aiProviders=[{id:'1111111111111111',note:'一',enabled:true},{id:'2222222222222222',note:'二',enabled:true}];aiProvidersLoaded=true;watchedGroups=[{chat_id:'-1001',name:'群'}];watchedGroupsLoaded=true");
+    app.api=async()=>({jobs:[{id:77,name:'多线路',enabled:1,groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'聊',provider_ids:'1111111111111111,2222222222222222'}]});
+    await ex('loadWaterAIJobs()');assert.strictEqual(ex('waterAIJobs[0].provider_ids'),'1111111111111111,2222222222222222');
+    ex('openWaterAIJobForm(77)');assert.strictEqual(ex('waterAIJobProviderExplicit'),true);assert.strictEqual(ex('[...waterAIJobProviderSel].join(",")'),'1111111111111111,2222222222222222');assert(!ex('rejectBrokenProviderSelection(waterAIJobProviderExplicit,waterAIJobProviderSel)'));
+    let sent=0;app.api=async()=>{sent++;return {ok:true}};app.loadWaterAIJobs=async()=>{};q('#waterAiJobName').value='多线路';await ex("mutateWaterAIJob('77','toggle')");assert.strictEqual(sent,1);
+    ex("waterAIJobs=[{id:78,name:'多线路',enabled:0,groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'聊',provider_ids:'1111111111111111,2222222222222222'}];openWaterAIJobForm(78)");let savedBody;app.api=async(_p,o)=>{savedBody=JSON.parse(o.body);return {ok:true}};await ex('saveWaterAIJob()');assert.strictEqual(savedBody.provider_ids,'1111111111111111,2222222222222222');
   });
   await test('水群任务加载和保存冻结账号，迟到列表及响应不能覆盖新账号表单',async()=>{
     app.loadWaterAIJobs=realWaterJobsLoader;ex("selectedAccount='old-flock';accountEpoch++;waterAIJobs=[]");let resolve;app.api=()=>new Promise(r=>resolve=r);const loading=ex('loadWaterAIJobs()');ex("selectedAccount='new-flock';accountEpoch++;waterAIJobs=[];waterAIJobsSeq++");resolve({jobs:[{id:9,name:'迟到任务'}]});await loading;assert.strictEqual(ex('waterAIJobs.length'),0);assert(!q('#waterAiJobsList').innerHTML.includes('迟到任务'));
@@ -1289,51 +1480,149 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     ex("cancelAutoEdit('link_register')");assert.strictEqual(ex('registrationAIProviderSel.lk.size'),0);assert.strictEqual(ex('registrationAIProviderSel.br.size'),1);assert.strictEqual(ex('registrationAIProviderSel.cr.size'),1);assert(!ex("selectedAIProvidersEnabled('aaaaaaaaaaaaaaaa')"));assert(ex("selectedAIProvidersEnabled('')"));
   });
   await test('任务学习注册编辑器显示可移除的停用失效API修复项',async()=>{
-    app.providerRepair=[{id:'1111111111111111',note:'正常线路',enabled:true},{id:'2222222222222222',note:'停用线路',enabled:false}];ex("aiProviders=providerRepair;waterAIJobProviderSel=new Set(['2222222222222222','3333333333333333']);waterAISkillProviderSel=new Set(['2222222222222222']);registrationAIProviderSel.br=new Set(['3333333333333333']);renderWaterAIProviderPicks();renderRegistrationAIProviders('br')");
-    const job=q('#waterAiJobProviders').innerHTML,learning=q('#waterAiSkillProviders').innerHTML,registration=q('#brAiFlockProviders').innerHTML;for(const markup of [job,learning,registration])assert(markup.includes('class="gp'));assert(job.includes('已停用：停用线路')&&job.includes('已失效：3333333333333333')&&job.includes('aria-invalid="true"'));assert(learning.includes('已停用：停用线路'));assert(registration.includes('已失效：3333333333333333'));
-    ex("toggleProviderSelection(waterAIJobProviderSel,'2222222222222222',renderWaterAIProviderPicks)");assert.strictEqual(ex('waterAIJobProviderSel.size'),1,'停用任务 API 应可移除');ex("toggleProviderSelection(waterAIJobProviderSel,'3333333333333333',renderWaterAIProviderPicks)");assert.strictEqual(ex('waterAIJobProviderSel.size'),0,'失效任务 API 应可移除');ex("toggleProviderSelection(waterAISkillProviderSel,'2222222222222222',renderWaterAIProviderPicks)");assert.strictEqual(ex('waterAISkillProviderSel.size'),0,'停用学习 API 应可移除');ex("toggleProviderSelection(registrationAIProviderSel.br,'3333333333333333',()=>renderRegistrationAIProviders('br'))");assert.strictEqual(ex('registrationAIProviderSel.br.size'),0,'失效注册 API 应可移除');assert.strictEqual(ex("waterAIJobPayload({provider_ids:[...waterAIJobProviderSel]}).provider_ids"),'');
+    app.providerRepair=[{id:'1111111111111111',note:'正常线路',enabled:true},{id:'2222222222222222',note:'停用线路',enabled:false}];ex("aiProviders=providerRepair;aiProvidersLoaded=true;watchedGroups=[{chat_id:'-1001',name:'有效群'}];watchedGroupsLoaded=true;staleReferenceNoticeShown=false;waterAIJobProviderSel=new Set(['2222222222222222','3333333333333333']);waterAISkillProviderSel=new Set(['2222222222222222','3333333333333333']);registrationAIProviderSel.br=new Set(['2222222222222222','3333333333333333']);waterAIJobGroupSel=new Set(['-1001','-9999']);waterAISkillGroupSel=new Set(['-9999']);renderWaterAIProviderPicks();renderRegistrationAIProviders('br');renderWaterAIGroups()");
+    const job=q('#waterAiJobProviders').innerHTML,learning=q('#waterAiSkillProviders').innerHTML,registration=q('#brAiFlockProviders').innerHTML;for(const markup of [job,learning,registration])assert(markup.includes('已停用：停用线路')&&markup.includes('repair')&&markup.includes('aria-invalid="true"'));assert(!job.includes('3333333333333333')&&!learning.includes('3333333333333333')&&!registration.includes('3333333333333333'));assert.strictEqual(ex('waterAIJobProviderSel.size'),1);assert.strictEqual(ex('waterAISkillProviderSel.size'),1);assert.strictEqual(ex('registrationAIProviderSel.br.size'),1);assert.deepStrictEqual(copy(ex('[...waterAIJobGroupSel]')),['-1001']);assert.strictEqual(ex('waterAISkillGroupSel.size'),0);assert(q('#toast').textContent.includes('已移除当前账号中不存在的旧群或 AI API 引用'));
+    ex("toggleProviderSelection(waterAIJobProviderSel,'2222222222222222',renderWaterAIProviderPicks)");assert.strictEqual(ex('waterAIJobProviderSel.size'),0,'停用任务 API 应可移除');ex("toggleProviderSelection(waterAISkillProviderSel,'2222222222222222',renderWaterAIProviderPicks)");assert.strictEqual(ex('waterAISkillProviderSel.size'),0,'停用学习 API 应可移除');ex("toggleProviderSelection(registrationAIProviderSel.br,'2222222222222222',()=>renderRegistrationAIProviders('br'))");assert.strictEqual(ex('registrationAIProviderSel.br.size'),0,'停用注册 API 应可移除');assert.strictEqual(ex("waterAIJobPayload({provider_ids:[...waterAIJobProviderSel],groups:[...waterAIJobGroupSel]}).provider_ids"),'');
     ex("cancelAutoEdit('button_register')");q('#brName').value='修复引用';q('#brUser').value='user';q('#brSecret').value='secret';const requests=[];app.api=async(p,o)=>{requests.push([p,o]);return {id:201}};app.loadAutos=async()=>{};await ex("saveAuto('button_register')");assert.strictEqual(JSON.parse(requests[0][1].body).ai_flock_provider_ids,'');
     ex('resetFlockSkillForm()');app.api=async(p,o)=>{requests.push([p,o]);return {ok:true}};app.loadFlockSkill=async()=>{};await ex('saveFlockSkill()');assert.strictEqual(JSON.parse(requests.at(-1)[1].body).flock_learning_provider_ids,'');
   });
+  await test('保存时API或群列表尚未加载仍保留原选择，不误报失效',async()=>{
+    ex("selectedAccount='pending-load';accountEpoch++;aiProvidersLoaded=false;watchedGroupsLoaded=false;waterAIJobs=[];aiProviders=[];watchedGroups=[];openWaterAIJobForm();waterAIJobGroupSel=new Set(['-1001']);aiProviders=[{id:'1111111111111111',enabled:true}]");q('#waterAiJobName').value='等待加载';q('#waterAiJobStart').value='09:00';q('#waterAiJobEnd').value='10:00';q('#waterAiJobPrompt').value='聊';
+    let sent=0;app.api=async()=>{sent++;return {ok:true}};app.loadWaterAIJobs=async()=>{};
+    ex("waterAIJobGroupSel=new Set(['-1001']);waterAIJobProviderSel=new Set(['1111111111111111'])");
+    await ex('saveWaterAIJob()');assert.strictEqual(sent,1);assert(q('#toast').textContent!=='原 API 已失效，请重新选择至少一个已启用 API');
+    ex('resetWaterAIJobForm()');
+  });
+  await test('列表未加载时保存不清空已选API或群，加载后才过滤失效项',async()=>{
+    ex("selectedAccount='guard';accountEpoch++;aiProvidersLoaded=false;watchedGroupsLoaded=false;aiProviders=[];watchedGroups=[]");
+    assert.strictEqual(ex("enabledProviderCsv('1111111111111111,2222222222222222')"),'1111111111111111,2222222222222222');
+    assert.strictEqual(ex("watchedGroupCsv('-1001,-1002')"),'-1001,-1002');
+    assert.strictEqual(ex("explicitProviderSelectionBroken(true,'1111111111111111')"),false);
+    assert.strictEqual(ex("selectedAIProvidersEnabled('1111111111111111')"),true);
+    ex("aiProvidersLoaded=true;aiProviders=[{id:'1111111111111111',enabled:true}]");assert.strictEqual(ex("enabledProviderCsv('1111111111111111,2222222222222222')"),'1111111111111111');assert.strictEqual(ex("explicitProviderSelectionBroken(true,'2222222222222222')"),true);
+    ex("watchedGroupsLoaded=true;watchedGroups=[{chat_id:'-1001'}]");assert.strictEqual(ex("watchedGroupCsv('-1001,-1002')"),'-1001');
+  });
+  await test('显式API全失效阻止水群注册学习保存，混合引用只保存有效项',async()=>{
+    app.validProviders=[{id:'1111111111111111',note:'有效',enabled:true}];ex("selectedAccount='explicit-provider';accountEpoch++;aiProviders=validProviders;aiProvidersLoaded=true;watchedGroups=[{chat_id:'-1001',name:'群'}];watchedGroupsLoaded=true;staleReferenceNoticeShown=false;waterAIJobs=[{id:401,name:'全失效',enabled:0,groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'',provider_ids:'3333333333333333'}];openWaterAIJobForm(401)");assert(ex('waterAIJobProviderExplicit'));assert.strictEqual(ex('waterAIJobProviderSel.size'),0);let requests=[];app.api=async(p,o)=>{requests.push([p,o]);return {ok:true}};app.loadWaterAIJobs=async()=>{};await ex('saveWaterAIJob()');assert.strictEqual(requests.length,0);assert.strictEqual(q('#toast').textContent,'原 API 已失效，请重新选择至少一个已启用 API');
+    ex("waterAIJobs=[{id:402,name:'混合',enabled:0,groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'',provider_ids:'3333333333333333,1111111111111111'}];openWaterAIJobForm(402)");await ex('saveWaterAIJob()');assert.strictEqual(JSON.parse(requests.at(-1)[1].body).provider_ids,'1111111111111111');ex("openWaterAIJobForm();waterAIJobGroupSel=new Set(['-1001'])");q('#waterAiJobName').value='全部线路';q('#waterAiJobStart').value='10:00';q('#waterAiJobEnd').value='11:00';await ex('saveWaterAIJob()');assert.strictEqual(JSON.parse(requests.at(-1)[1].body).provider_ids,'');assert.strictEqual(ex('waterAIJobProviderExplicit'),false);
+    let sent=0;app.api=async()=>{sent++;return {id:500}};for(const [type,prefix] of [['button_register','br'],['link_register','lk'],['code_register','cr']]){ex("cancelAutoEdit('"+type+"');setRegistrationAIFlock('"+prefix+"','3333333333333333','')");assert(ex('registrationAIProviderExplicit.'+prefix));await ex("saveAuto('"+type+"')");assert.strictEqual(sent,0);assert.strictEqual(q('#toast').textContent,'原 API 已失效，请重新选择至少一个已启用 API')}
+    ex("cancelAutoEdit('link_register');setRegistrationAIFlock('lk','3333333333333333,1111111111111111','')");q('#lkName').value='混合注册';q('#lkButton').value='注册';q('#lkReady').value='准备';q('#lkSuccess').value='成功';q('#lkUser').value='user';q('#lkSecret').value='secret';requests=[];app.api=async(p,o)=>{requests.push([p,o]);return {id:501}};app.loadAutos=async()=>{};await ex("saveAuto('link_register')");assert.strictEqual(JSON.parse(requests[0][1].body).ai_flock_provider_ids,'1111111111111111');ex("cancelAutoEdit('button_register')");q('#brName').value='全部注册';q('#brUser').value='user';q('#brSecret').value='secret';requests=[];await ex("saveAuto('button_register')");assert.strictEqual(JSON.parse(requests[0][1].body).ai_flock_provider_ids,'');assert.strictEqual(ex('registrationAIProviderExplicit.br'),false);
+    app.loadFlockSkill=realSkillLoader;app.api=async()=>({flock_learning_provider_ids:'3333333333333333'});await ex('loadFlockSkill()');assert(ex('waterAISkillProviderExplicit'));assert.strictEqual(ex('waterAISkillProviderSel.size'),0);sent=0;app.api=async()=>{sent++;return {ok:true}};await ex('saveFlockSkill()');assert.strictEqual(sent,0);assert.strictEqual(q('#toast').textContent,'原 API 已失效，请重新选择至少一个已启用 API');app.api=async()=>({flock_learning_provider_ids:'3333333333333333,1111111111111111'});app.loadFlockSkill=realSkillLoader;await ex('loadFlockSkill()');requests=[];app.api=async(p,o)=>{requests.push([p,o]);return {ok:true}};app.loadFlockSkill=async()=>{};await ex('saveFlockSkill()');assert.strictEqual(JSON.parse(requests[0][1].body).flock_learning_provider_ids,'1111111111111111');ex('resetFlockSkillForm()');requests=[];await ex('saveFlockSkill()');assert.strictEqual(JSON.parse(requests[0][1].body).flock_learning_provider_ids,'');assert.strictEqual(ex('waterAISkillProviderExplicit'),false);
+  });
   await test('学习配置载入统计并精确独立保存，立即学习和上传使用专用接口',async()=>{
     app.loadFlockSkill=realSkillLoader;ex("selectedAccount='skill-a';accountEpoch++;watchedGroups=[{chat_id:'-1001',name:'学习群'}];aiProviders=[{id:'0123456789abcdef',note:'学习线路',enabled:true}]");app.api=async p=>{assert.strictEqual(p,'/api/ai/flock/skill');return {flock_learning_enabled:'1',flock_learning_start:'01:00',flock_learning_end:'02:00',flock_learning_groups:'-1001',flock_learning_provider_ids:'0123456789abcdef',flock_learning_unlimited:'1',flock_learning_unlimited_start:'2026-11-12T10:00',flock_learning_unlimited_end:'2026-11-12T12:00',flock_deep_learning_enabled:'1',flock_deep_learning_start:'2026-11-13T08:00',flock_deep_learning_end:'2026-11-13T10:00',flock_skill_upload_enabled:'1',flock_skill_upload_time:'02:10',flock_skill_distill_enabled:'1',flock_skill_distill_time:'04:30',flock_learning_batch_size:33,flock_learning_message_chars:240,flock_learning_skill_chars:9000,flock_learning_max_tokens:777,sample_count:7,skill_size:1536,flock_skill_last_upload_date:'2026-11-12',recent_block_count:9,detail_block_count:8,summary_block_count:3,fading_block_count:2,flock_learning_unlimited_active:true,flock_deep_learning_active:false}};await ex('loadFlockSkill()');assert(q('#waterAiSkillEnabled').checked);assert.strictEqual(q('#waterAiSkillStart').value,'01:00');assert.strictEqual(ex("[...waterAISkillGroupSel].join(',')"),'-1001');assert(q('#waterAiSkillUnlimited').checked);assert.strictEqual(q('#waterAiSkillUnlimitedStart').value,'2026-11-12T10:00');assert.strictEqual(q('#waterAiSkillUnlimitedEnd').value,'2026-11-12T12:00');assert(q('#waterAiSkillDeepEnabled').checked);assert.strictEqual(q('#waterAiSkillDeepStart').value,'2026-11-13T08:00');assert.strictEqual(q('#waterAiSkillDeepEnd').value,'2026-11-13T10:00');assert(['BatchSize','MessageChars','SkillChars','MaxTokens'].every(s=>q('#waterAiSkill'+s).disabled));assert(q('#waterAiSkillDistillEnabled').checked);assert.strictEqual(q('#waterAiSkillDistillTime').value,'04:30');assert(!q('#waterAiSkillDistillTime').disabled&&!q('#waterAiSkillUploadTime').disabled&&!q('#waterAiSkillDeepStart').disabled);assert(q('#waterAiSkillActiveStatus').textContent.includes('鲸鱼模式'));assert.deepStrictEqual(['BatchSize','MessageChars','SkillChars','MaxTokens'].map(s=>q('#waterAiSkill'+s).value),['33','240','9000','777']);assert(q('#waterAiSkillSamples').textContent.includes('7'));assert(q('#waterAiSkillSize').textContent.includes('1.5 KiB'));assert(q('#waterAiSkillLastUpload').textContent.includes('2026-11-12'));assert(!q('#waterAiSkillGeneratedStats').classList.contains('hidden'));assert.strictEqual(q('#waterAiSkillRecentCount').textContent,'近期记忆：9');assert.strictEqual(q('#waterAiSkillDetailCount').textContent,'详细记忆：8');assert.strictEqual(q('#waterAiSkillSummaryCount').textContent,'摘要记忆：3');assert.strictEqual(q('#waterAiSkillFadingCount').textContent,'淡化记忆：2');
-    const requests=[];app.api=async(p,o)=>{requests.push([p,o]);return p.endsWith('learn-now')?{learned:true}:p.endsWith('distill-now')?{distilled:true}:{ok:true}};app.loadFlockSkill=async()=>{};q('#waterAiSkillEnabled').checked=true;q('#waterAiSkillStart').value='03:00';q('#waterAiSkillEnd').value='04:00';q('#waterAiSkillUnlimitedStart').value='2026-12-01T09:30';q('#waterAiSkillUnlimitedEnd').value='2026-12-01T11:30';q('#waterAiSkillDeepEnabled').checked=true;q('#waterAiSkillDeepStart').value='2026-12-02T08:15';q('#waterAiSkillDeepEnd').value='2026-12-02T12:45';q('#waterAiSkillUploadEnabled').checked=true;q('#waterAiSkillUploadTime').value='04:10';q('#waterAiSkillDistillEnabled').checked=true;q('#waterAiSkillDistillTime').value='05:20';q('#waterAiSkillBatchSize').value='50';q('#waterAiSkillMessageChars').value='500';q('#waterAiSkillSkillChars').value='20000';q('#waterAiSkillMaxTokens').value='2000';ex("waterAISkillGroupSel=new Set(['-1001']);waterAISkillProviderSel=new Set(['0123456789abcdef'])");await ex('saveFlockSkill()');assert.strictEqual(requests[0][0],'/api/ai/flock/skill');assert.strictEqual(requests[0][1].method,'PUT');assert.deepStrictEqual(JSON.parse(requests[0][1].body),{flock_learning_enabled:1,flock_learning_start:'03:00',flock_learning_end:'04:00',flock_learning_groups:'-1001',flock_learning_provider_ids:'0123456789abcdef',flock_learning_unlimited:1,flock_learning_unlimited_start:'2026-12-01T09:30',flock_learning_unlimited_end:'2026-12-01T11:30',flock_deep_learning_enabled:1,flock_deep_learning_start:'2026-12-02T08:15',flock_deep_learning_end:'2026-12-02T12:45',flock_skill_upload_enabled:1,flock_skill_upload_time:'04:10',flock_skill_distill_enabled:1,flock_skill_distill_time:'05:20',flock_learning_batch_size:50,flock_learning_message_chars:500,flock_learning_skill_chars:20000,flock_learning_max_tokens:2000});
+    const requests=[];app.api=async(p,o)=>{requests.push([p,o]);return p.endsWith('learn-now')?{learned:true}:p.endsWith('distill-now')?{distilled:true}:{ok:true}};app.loadFlockSkill=async()=>{};q('#waterAiSkillEnabled').checked=true;q('#waterAiSkillStart').value='03:00';q('#waterAiSkillEnd').value='04:00';q('#waterAiSkillUnlimitedStart').value='2026-12-01T09:30';q('#waterAiSkillUnlimitedEnd').value='2026-12-01T11:30';q('#waterAiSkillDeepEnabled').checked=true;q('#waterAiSkillDeepStart').value='2026-12-02T08:15';q('#waterAiSkillDeepEnd').value='2026-12-02T12:45';q('#waterAiSkillUploadEnabled').checked=true;q('#waterAiSkillUploadTime').value='04:10';q('#waterAiSkillDistillEnabled').checked=true;q('#waterAiSkillDistillTime').value='05:20';q('#waterAiSkillBatchSize').value='200';q('#waterAiSkillMessageChars').value='4096';q('#waterAiSkillSkillChars').value='5242880';q('#waterAiSkillMaxTokens').value='32768';ex("waterAISkillGroupSel=new Set(['-1001']);waterAISkillProviderSel=new Set(['0123456789abcdef'])");await ex('saveFlockSkill()');assert.strictEqual(requests[0][0],'/api/ai/flock/skill');assert.strictEqual(requests[0][1].method,'PUT');assert.deepStrictEqual(JSON.parse(requests[0][1].body),{flock_learning_enabled:1,flock_learning_start:'03:00',flock_learning_end:'04:00',flock_learning_groups:'-1001',flock_learning_provider_ids:'0123456789abcdef',flock_learning_unlimited:1,flock_learning_unlimited_start:'2026-12-01T09:30',flock_learning_unlimited_end:'2026-12-01T11:30',flock_deep_learning_enabled:1,flock_deep_learning_start:'2026-12-02T08:15',flock_deep_learning_end:'2026-12-02T12:45',flock_skill_upload_enabled:1,flock_skill_upload_time:'04:10',flock_skill_distill_enabled:1,flock_skill_distill_time:'05:20',flock_learning_batch_size:200,flock_learning_message_chars:4096,flock_learning_skill_chars:5242880,flock_learning_max_tokens:32768});
     await ex("runFlockSkillAction('learn-now')");await ex("runFlockSkillAction('distill-now')");await ex("runFlockSkillAction('upload-now')");assert.deepStrictEqual(requests.slice(1).map(x=>[x[0],x[1].method]),[['/api/ai/flock/skill/learn-now','POST'],['/api/ai/flock/skill/distill-now','POST'],['/api/ai/flock/skill/upload-now','POST']]);
+    ex('renderFlockSkill({study_size:768})');assert.strictEqual(q('#waterAiStudySize').textContent,'study.md：768 B');
+  });
+  await test('学习状态面板位于保存上方并安全渲染全部后端状态与元数据',async()=>{
+    const card=cardOf('flockLearningCard'),statusAt=card.indexOf('id="waterAiSkillActiveStatus"'),saveAt=card.indexOf('id="waterAiSkillSave"'),statsAt=card.indexOf('id="waterAiSkillSamples"');assert(statusAt>0&&statusAt<saveAt&&saveAt<statsAt);for(const id of ['waterAiSkillStateTitle','waterAiSkillStateMeta','waterAiSkillStateError'])assert(card.includes('id="'+id+'"'));assert(card.includes('role="status" aria-live="polite"'));assert(!html.includes('.learning-status-dot{animation'));
+    const cases={disabled:'未启用',waiting_window:'等待时段',collecting:'正在采集 7/10',ready:'已满足条件等待自动学习',waiting_automatic:'已满足条件等待自动学习',queued:'已排队等待学习',learning:'正在学习',success:'最近学习成功',whale:'土豪模式',deep:'深度学习',expired:'高成本学习已到期',capacity_stopped:'容量不足停止',error:'学习失败'};for(const [state,label] of Object.entries(cases)){app.statusFixture={learning_state:state,sample_count:7,learning_threshold:10};ex('renderFlockLearningStatus(statusFixture)');assert.strictEqual(q('#waterAiSkillStateTitle').textContent,label)}
+    app.statusFixture={learning_state:'error',sample_count:9,learning_threshold:10,ai_learning_next_at:'2026-12-01 10:00',flock_learning_last_run_at:'123',flock_learning_last_success_at:'120',flock_learning_last_error:'<img src=x onerror=bad()>'};ex('renderFlockLearningStatus(statusFixture)');assert(q('#waterAiSkillStateMeta').textContent.includes('下次检查：2026-12-01 10:00'));assert(q('#waterAiSkillStateMeta').textContent.includes('最近运行：123'));assert(q('#waterAiSkillStateMeta').textContent.includes('最近成功：120'));assert.strictEqual(q('#waterAiSkillStateError').textContent,'错误：<img src=x onerror=bad()>');assert.strictEqual(q('#waterAiSkillStateError').innerHTML,'');assert(q('#waterAiSkillActiveStatus').className.includes('state-error'));
+  });
+  await test('立即学习先显示学习中，queued响应保留排队状态并等待轮询',async()=>{
+    ex("selectedAccount='learn-queue';accountEpoch++;waterAISkillBusy=false");let done,loads=0;app.api=()=>new Promise(r=>done=r);app.loadFlockSkill=async()=>{loads++};const pending=ex("runFlockSkillAction('learn-now')");assert.strictEqual(q('#waterAiSkillStateTitle').textContent,'正在学习');assert(q('#waterAiLearnNow').disabled);done({ok:true,queued:true});await pending;assert.strictEqual(q('#waterAiSkillStateTitle').textContent,'已排队等待学习');assert(q('#waterAiSkillStatus').textContent.includes('已排队'));assert.strictEqual(loads,0);assert(!q('#waterAiLearnNow').disabled);
+  });
+  await test('学习GET防重叠且错误同时留在状态面板和操作提示',async()=>{
+    app.loadFlockSkill=realSkillLoader;ex("selectedAccount='learn-load';accountEpoch++;waterAISkillLoading=false");q('#waterAiSkillBatchSize').value='123';let done,sent=0;app.api=()=>{sent++;return new Promise(r=>done=r)};const first=ex('loadFlockSkill(true)'),second=ex('loadFlockSkill(true)');assert.strictEqual(sent,1);done({learning_state:'collecting',sample_count:3,learning_threshold:10,flock_learning_batch_size:20});await Promise.all([first,second]);assert.strictEqual(q('#waterAiSkillStateTitle').textContent,'正在采集 3/10');assert.strictEqual(q('#waterAiSkillBatchSize').value,'123');assert.strictEqual(ex('waterAISkillLoading'),false);
+    app.api=async()=>{throw new Error('<script>safe status error</script>')};await ex('loadFlockSkill()');assert.strictEqual(q('#waterAiSkillStateError').textContent,'错误：<script>safe status error</script>');assert(q('#waterAiSkillStatus').textContent.includes('safe status error'));assert.strictEqual(q('#waterAiSkillStateError').innerHTML,'');
+  });
+  await test('学习验收安全显示五项答案并处理忙碌错误和账号竞态',async()=>{
+    const card=cardOf('flockLearningCard');assert(card.includes('id="waterAiSkillExam"')&&card.includes('id="waterAiSkillExamResult"')&&card.includes('<pre class="learning-exam-result"'));ex("selectedAccount='exam-a';accountEpoch++;waterAISkillBusy=false");let done,sent=0;app.api=(p,o)=>{sent++;assert.strictEqual(p,'/api/ai/flock/skill/exam');assert.strictEqual(o.method,'POST');return new Promise(r=>done=r)};const pending=ex('runFlockSkillExam()');const duplicate=ex('runFlockSkillExam()');assert.strictEqual(sent,1);assert(q('#waterAiSkillExam').disabled);done({answer:'1. 第一项\n2. <img src=x>\n3. 第三项\n4. 第四项\n5. 第五项'});await pending;await duplicate;assert(q('#waterAiSkillExamResult').textContent.includes('<img src=x>'));assert.strictEqual(q('#waterAiSkillExamResult').innerHTML,'');assert(q('#waterAiSkillStatus').textContent.includes('未修改 skill.md'));assert(!q('#waterAiSkillExam').disabled);
+    let staleDone;app.api=()=>new Promise(r=>staleDone=r);const stale=ex('runFlockSkillExam()');ex("selectedAccount='exam-b';accountEpoch++;resetWaterAIState()");q('#waterAiSkillExamResult').textContent='新账号验收';staleDone({answer:'旧账号答案'});await stale;assert.strictEqual(q('#waterAiSkillExamResult').textContent,'新账号验收');app.api=async()=>{throw new Error('mock exam error')};await ex('runFlockSkillExam()');assert(q('#waterAiSkillExamResult').textContent.includes('验收失败：mock exam error'));assert(!q('#waterAiSkillExam').disabled);
   });
   await test('学习限制控件边界和重置默认准确，非法整数保存前拒绝',async()=>{
-    const specs=[['BatchSize','20','10','50'],['MessageChars','160','40','500'],['SkillChars','6000','500','20000'],['MaxTokens','600','100','2000']];for(const [suffix,def,min,max] of specs){const input=html.match(new RegExp('<input\\b[^>]*id="waterAiSkill'+suffix+'"[^>]*>'))[0];for(const attr of ['value="'+def+'"','min="'+min+'"','max="'+max+'"','step="1"'])assert(input.includes(attr))}
-    ex('resetFlockSkillForm()');assert(!q('#waterAiSkillUnlimited').checked&&!q('#waterAiSkillDeepEnabled').checked&&!q('#waterAiSkillDistillEnabled').checked);assert.strictEqual(q('#waterAiSkillUnlimitedStart').value,'');assert.strictEqual(q('#waterAiSkillUnlimitedEnd').value,'');assert.strictEqual(q('#waterAiSkillDeepStart').value,'');assert.strictEqual(q('#waterAiSkillDeepEnd').value,'');assert.strictEqual(q('#waterAiSkillDistillTime').value,'04:00');assert(specs.every(([suffix])=>!q('#waterAiSkill'+suffix).disabled));assert.deepStrictEqual(specs.map(([suffix])=>q('#waterAiSkill'+suffix).value),specs.map(x=>x[1]));let sent=0;app.api=async()=>{sent++;return {}};const invalid={BatchSize:['9','51','10.5',''],MessageChars:['39','501','x'],SkillChars:['499','20001','500.1'],MaxTokens:['99','2001','100.5']};for(const [suffix,values] of Object.entries(invalid))for(const value of values){q('#waterAiSkill'+suffix).value=value;await ex('saveFlockSkill()');assert.strictEqual(sent,0);assert(q('#toast').textContent.includes('整数'));ex('resetFlockSkillForm()')}
+    const specs=[['BatchSize','20','10','200'],['MessageChars','160','40','4096'],['SkillChars','6000','500','5242880'],['MaxTokens','600','100','32768']];for(const [suffix,def,min,max] of specs){const input=html.match(new RegExp('<input\\b[^>]*id="waterAiSkill'+suffix+'"[^>]*>'))[0];for(const attr of ['value="'+def+'"','min="'+min+'"','max="'+max+'"','step="1"'])assert(input.includes(attr))}
+    ex('resetFlockSkillForm()');assert(!q('#waterAiSkillUnlimited').checked&&!q('#waterAiSkillDeepEnabled').checked&&!q('#waterAiSkillDistillEnabled').checked);assert.strictEqual(q('#waterAiSkillUnlimitedStart').value,'');assert.strictEqual(q('#waterAiSkillUnlimitedEnd').value,'');assert.strictEqual(q('#waterAiSkillDeepStart').value,'');assert.strictEqual(q('#waterAiSkillDeepEnd').value,'');assert.strictEqual(q('#waterAiSkillDistillTime').value,'04:00');assert(specs.every(([suffix])=>!q('#waterAiSkill'+suffix).disabled));assert.deepStrictEqual(specs.map(([suffix])=>q('#waterAiSkill'+suffix).value),specs.map(x=>x[1]));let sent=0;app.api=async()=>{sent++;return {}};const invalid={BatchSize:['9','201','10.5',''],MessageChars:['39','4097','x'],SkillChars:['499','5242881','500.1'],MaxTokens:['99','32769','100.5']};for(const [suffix,values] of Object.entries(invalid))for(const value of values){q('#waterAiSkill'+suffix).value=value;await ex('saveFlockSkill()');assert.strictEqual(sent,0);assert(q('#toast').textContent.includes('整数'));ex('resetFlockSkillForm()')}
   });
   await test('无限学习默认关闭，警告完整并仅禁用预算输入且保留数值',async()=>{
-    const card=html.slice(html.indexOf('id="flockLearningCard"'),html.indexOf('id="migrationCard"'));for(const text of ['高额 Token 费用','全部最多 200 条完整消息','完整 1 MiB skill.md','请求输出上限 32768 Token','实际仍受服务商与模型限制','到期后自动回到普通预算'])assert(card.includes(text));assert(card.includes('class="check water-ai-cost-toggle"')&&card.includes('aria-describedby="waterAiSkillUnlimitedWarning"'));assert(html.includes('#flockLearningCard label.check{min-height:44px}'));
+    const card=cardOf('flockLearningCard');for(const text of ['高额 Token 费用','全部最多 200 条完整消息','完整 5 MiB skill.md','请求输出上限 32768 Token','实际仍受服务商与模型限制','到期后自动回到普通预算'])assert(card.includes(text));assert(card.includes('class="check water-ai-cost-toggle"')&&card.includes('aria-describedby="waterAiSkillUnlimitedWarning"'));assert(html.includes('#flockLearningCard label.check{min-height:44px}'));
     ex('resetFlockSkillForm()');const suffixes=['BatchSize','MessageChars','SkillChars','MaxTokens'],before=suffixes.map(s=>q('#waterAiSkill'+s).value);q('#waterAiSkillUnlimited').checked=true;ex('syncFlockLearningUnlimited()');assert(suffixes.every(s=>q('#waterAiSkill'+s).disabled));assert.deepStrictEqual(suffixes.map(s=>q('#waterAiSkill'+s).value),before);q('#waterAiSkillUnlimited').checked=false;ex('syncFlockLearningUnlimited()');assert(suffixes.every(s=>!q('#waterAiSkill'+s).disabled));assert.deepStrictEqual(suffixes.map(s=>q('#waterAiSkill'+s).value),before);
     ex("renderFlockSkill({flock_learning_unlimited:'0'})");assert(!q('#waterAiSkillUnlimited').checked);assert(suffixes.every(s=>!q('#waterAiSkill'+s).disabled));
   });
-  await test('鲸鱼和深度主人学习北京时间窗口严格校验，深度模式不禁用普通预算',async()=>{
-    const card=html.slice(html.indexOf('id="flockLearningCard"'),html.indexOf('id="migrationCard"'));for(const id of ['waterAiSkillUnlimitedStart','waterAiSkillUnlimitedEnd','waterAiSkillDeepEnabled','waterAiSkillDeepStart','waterAiSkillDeepEnd'])assert(card.includes('id="'+id+'"'));assert.strictEqual((card.match(/type="datetime-local"/g)||[]).length,4);assert((card.match(/北京时间/g)||[]).length>=8);for(const text of ['读取所选群的近期事件','主人与群组的对话','Token 消耗较高','到期自动关闭','上下文过长时会自动拆分并处理全部批次','都使用这里选择的群与 API'])assert(card.includes(text));
+  await test('鲸鱼和深度学习北京时间窗口严格校验，深度模式不禁用普通预算',async()=>{
+    const card=cardOf('flockLearningCard');for(const id of ['waterAiSkillUnlimitedStart','waterAiSkillUnlimitedEnd','waterAiSkillDeepEnabled','waterAiSkillDeepStart','waterAiSkillDeepEnd'])assert(card.includes('id="'+id+'"'));assert.strictEqual((card.match(/type="datetime-local"/g)||[]).length,4);assert((card.match(/北京时间/g)||[]).length>=8);for(const text of ['近期最多 200 条主人与群友消息','Token 消耗较高','到期自动关闭','上下文过长时会自动拆分','主人风格写入 skill.md','群内知识、话题与氛围写入 study.md'])assert(card.includes(text));
     ex("resetFlockSkillForm();watchedGroups=[{chat_id:'-1001',name:'群'}];aiProviders=[{id:'0123456789abcdef',enabled:true}];waterAISkillGroupSel=new Set(['-1001'])");const suffixes=['BatchSize','MessageChars','SkillChars','MaxTokens'];q('#waterAiSkillDeepEnabled').checked=true;q('#waterAiSkillDeepStart').value='2026-12-01T10:00';q('#waterAiSkillDeepEnd').value='2026-12-01T11:00';assert(suffixes.every(s=>!q('#waterAiSkill'+s).disabled));let sent=0;app.api=async()=>{sent++;return {ok:true}};app.loadFlockSkill=async()=>{};
     for(const [prefix,start,end] of [['Unlimited','2026-12-01T10:00:30','2026-12-01T11:00'],['Unlimited','2026-02-30T10:00','2026-12-01T11:00'],['Deep','2026-12-01T11:00','2026-12-01T11:00'],['Deep','2026-12-01T12:00','2026-12-01T11:00']]){ex('resetFlockSkillForm()');ex("waterAISkillGroupSel=new Set(['-1001'])");q(prefix==='Unlimited'?'#waterAiSkillUnlimited':'#waterAiSkillDeepEnabled').checked=true;q('#waterAiSkill'+prefix+'Start').value=start;q('#waterAiSkill'+prefix+'End').value=end;await ex('saveFlockSkill()');assert.strictEqual(sent,0);assert(q('#toast').textContent.includes('开始早于结束')||q('#toast').textContent.includes('精确到分钟'))}
   });
   await test('学习模式旧账号GET迟到时不覆盖新账号状态和时间窗',async()=>{
-    app.loadFlockSkill=realSkillLoader;ex("selectedAccount='learn-old';accountEpoch++;resetWaterAIState()");let done;app.api=()=>new Promise(r=>done=r);const pending=ex('loadFlockSkill()');ex("selectedAccount='learn-new';accountEpoch++;resetWaterAIState()");q('#waterAiSkillActiveStatus').textContent='当前状态：新账号';done({flock_learning_unlimited:'1',flock_learning_unlimited_start:'2026-12-01T10:00',flock_learning_unlimited_end:'2026-12-01T12:00',flock_learning_unlimited_active:true});await pending;assert.strictEqual(q('#waterAiSkillActiveStatus').textContent,'当前状态：新账号');assert(!q('#waterAiSkillUnlimited').checked);assert.strictEqual(q('#waterAiSkillUnlimitedStart').value,'');
+    app.loadFlockSkill=realSkillLoader;ex("selectedAccount='learn-old';accountEpoch++;resetWaterAIState()");let done;app.api=()=>new Promise(r=>done=r);const pending=ex('loadFlockSkill()');ex("selectedAccount='learn-new';accountEpoch++;resetWaterAIState()");q('#waterAiSkillStateTitle').textContent='新账号';done({flock_learning_unlimited:'1',flock_learning_unlimited_start:'2026-12-01T10:00',flock_learning_unlimited_end:'2026-12-01T12:00',flock_learning_unlimited_active:true});await pending;assert.strictEqual(q('#waterAiSkillStateTitle').textContent,'新账号');assert(!q('#waterAiSkillUnlimited').checked);assert.strictEqual(q('#waterAiSkillUnlimitedStart').value,'');
   });
   await test('提炼说明、统计、错误和账号迟到响应安全',async()=>{
-    const card=html.slice(html.indexOf('id="flockLearningCard"'),html.indexOf('id="migrationCard"'));for(const text of ['保留 1 天完整内容','超过 1 天转为详细记忆','超过 7 天转为摘要','超过 60 天且至少经过 3 次提炼后逐渐淡化','每天按所选北京时间提炼','手动导入或固定的 Markdown 永远不会被自动删除'])assert(card.includes(text));for(const id of ['waterAiSkillDistillEnabled','waterAiSkillDistillTime','waterAiDistillNow','waterAiSkillGeneratedStats','waterAiSkillRecentCount','waterAiSkillDetailCount','waterAiSkillSummaryCount','waterAiSkillFadingCount'])assert(card.includes('id="'+id+'"'));
-    ex("renderFlockSkill({recent_block_count:7,generated_detail_count:4,generated_summary_count:5,generated_fading_count:6,active_status:'后端活动状态'})");assert.strictEqual(q('#waterAiSkillRecentCount').textContent,'近期记忆：7');assert.strictEqual(q('#waterAiSkillDetailCount').textContent,'详细记忆：4');assert.strictEqual(q('#waterAiSkillSummaryCount').textContent,'摘要记忆：5');assert.strictEqual(q('#waterAiSkillFadingCount').textContent,'淡化记忆：6');assert.strictEqual(q('#waterAiSkillActiveStatus').textContent,'当前状态：后端活动状态');
+    const card=cardOf('flockLearningCard');for(const text of ['不再保存原始消息副本','近期超过 40 条合并为详细记忆','详细超过 200 条合并为摘要','摘要超过 300 条转为淡化','单条记忆最多 700 字','手动导入或固定的 Markdown 永远不会被自动删除'])assert(card.includes(text));for(const id of ['waterAiSkillDistillEnabled','waterAiSkillDistillTime','waterAiDistillNow','waterAiSkillGeneratedStats','waterAiSkillRecentCount','waterAiSkillDetailCount','waterAiSkillSummaryCount','waterAiSkillFadingCount'])assert(card.includes('id="'+id+'"'));
+    ex("renderFlockSkill({recent_block_count:7,generated_detail_count:4,generated_summary_count:5,generated_fading_count:6,learning_state:'custom',state_text:'后端活动状态'})");assert.strictEqual(q('#waterAiSkillRecentCount').textContent,'近期记忆：7');assert.strictEqual(q('#waterAiSkillDetailCount').textContent,'详细记忆：4');assert.strictEqual(q('#waterAiSkillSummaryCount').textContent,'摘要记忆：5');assert.strictEqual(q('#waterAiSkillFadingCount').textContent,'淡化记忆：6');assert.strictEqual(q('#waterAiSkillStateTitle').textContent,'后端活动状态');
     ex("selectedAccount='distill-a';accountEpoch++;waterAISkillBusy=false");let done,loads=0;app.api=()=>new Promise(r=>done=r);app.loadFlockSkill=async()=>{loads++};const pending=ex("runFlockSkillAction('distill-now')");assert(q('#waterAiDistillNow').disabled);ex("selectedAccount='distill-b';accountEpoch++;resetWaterAIState()");q('#waterAiSkillStatus').textContent='新账号状态';done({distilled:true});await pending;assert.strictEqual(q('#waterAiSkillStatus').textContent,'新账号状态');assert.strictEqual(loads,0);assert.strictEqual(ex('waterAISkillBusy'),false);
     app.api=async()=>{throw new Error('mock distill unavailable')};app.loadFlockSkill=async()=>{};await ex("runFlockSkillAction('distill-now')");assert(q('#waterAiSkillStatus').textContent.includes('提炼失败：mock distill unavailable'));assert(!q('#waterAiDistillNow').disabled);
   });
+  await test('验证码识别两个开关同排等宽且保留触控高度',async()=>{
+    const card=html.slice(html.indexOf('id="aiTestCard"'),html.indexOf('id="aiTestProviders"'));
+    assert(card.includes('class="recognition-switches"'));
+    assert(!card.includes('class="flex" style="gap:18px"'));
+    for(const id of ['sAiOn','sOcrOn'])assert((card.match(new RegExp('id="'+id+'"','g'))||[]).length===1);
+    for(const css of ['.recognition-switches{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}','min-height:44px','flex:0 0 auto'])assert(html.includes(css));
+  });
+  await test('桌面宽屏使用瀑布流分栏且手机布局不受影响',async()=>{
+    const wide=html.slice(html.indexOf('/* 宽屏：导航置顶、内容双列'),html.indexOf('section.act,.fold.open .fold-b{animation:none}'));
+    for(const css of ['columns:2','column-gap:12px','column-span:all','break-inside:avoid','-webkit-column-break-inside:avoid'])assert(wide.includes(css));
+    assert(wide.includes('display:block;columns:2'));
+    for(const id of ['#tab-overview.act','#tab-autos.act','#tab-groups.act','#tab-settings.act'])assert(wide.includes(id));
+    assert(!wide.includes('grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start'));
+    assert(html.includes('@media(max-width:430px)')&&html.includes('@media(max-width:340px)'));
+    const narrow=html.slice(0,html.indexOf('@media(min-width:900px)'));
+    assert(!narrow.includes('columns:2'));
+  });
+  await test('学习卡片390与430宽度静态规则阻止文件和网格横向溢出',async()=>{
+    for(const css of ['#flockLearningCard{min-width:0;overflow:hidden}','#flockLearningCard .fold-b','#flockLearningCard input[type=datetime-local]','#flockLearningCard input[type=file]{display:block;width:100%;overflow:hidden}','input[type=file]::file-selector-button','@media(max-width:430px)','grid-template-columns:repeat(2,minmax(0,1fr))','@media(max-width:340px)'])assert(html.includes(css));assert(html.includes('#flockLearningCard .water-ai-toolbar,#flockLearningCard .water-ai-stats{display:grid'));assert(html.includes('.learning-exam-result{max-width:100%'));assert(html.includes('.model-choice-list{width:100%;max-width:100%'));assert(html.includes('.ai-flock-emojis{display:grid;grid-template-columns:repeat(auto-fill,minmax(44px,1fr))'));assert(html.includes('.water-ai-limits>div{min-width:0}'));
+  });
   await test('skill Markdown 选择只读取，校验大小UTF-8并在显式确认后导入且处理竞态换账号',async()=>{
     const sent=[];app.api=async(p,o)=>{sent.push([p,o]);return {ok:true}};app.loadFlockSkill=async()=>{};app.window.confirm=()=>true;
-    const card=html.slice(html.indexOf('id="flockLearningCard"'),html.indexOf('id="migrationCard"'));assert(card.includes('选择 Markdown 文件（最大 1 MiB）')&&!card.includes('最大 64 KiB'));
-    for(const file of [{name:'x.txt',size:10},{name:'x.md',size:0},{name:'x.md',size:1024*1024+1}]){q('#waterAiSkillFile').files=[file];ex('readFlockSkillFile()');assert(q('#waterAiSkillImport').disabled)}
-    q('#waterAiSkillFile').files=[{name:'old.md',size:10}];ex('readFlockSkillFile()');const old=readers.at(-1);q('#waterAiSkillFile').files=[{name:'new.markdown',size:1024*1024}];ex('readFlockSkillFile()');const latest=readers.at(-1);assert(old.aborted);latest.complete('# 新人格');old.complete('# 旧人格');assert(!q('#waterAiSkillImport').disabled);assert.strictEqual(sent.length,0);assert(q('#waterAiSkillStatus').textContent.includes('确认导入'));
+    const card=cardOf('flockLearningCard');assert(card.includes('选择 Markdown 文件（最大 5 MiB）')&&!card.includes('最大 64 KiB'));
+    for(const file of [{name:'x.txt',size:10},{name:'x.md',size:0},{name:'x.md',size:5*1024*1024+1}]){q('#waterAiSkillFile').files=[file];ex('readFlockSkillFile()');assert(q('#waterAiSkillImport').disabled)}
+    q('#waterAiSkillFile').files=[{name:'old.md',size:10}];ex('readFlockSkillFile()');const old=readers.at(-1);q('#waterAiSkillFile').files=[{name:'new.markdown',size:5*1024*1024}];ex('readFlockSkillFile()');const latest=readers.at(-1);assert(old.aborted);latest.complete('# 新人格');old.complete('# 旧人格');assert(!q('#waterAiSkillImport').disabled);assert.strictEqual(sent.length,0);assert(q('#waterAiSkillStatus').textContent.includes('确认导入'));
     app.window.confirm=()=>false;await ex('importFlockSkill()');assert.strictEqual(sent.length,0);app.window.confirm=()=>true;await ex('importFlockSkill()');assert.strictEqual(sent.length,1);assert.strictEqual(sent[0][0],'/api/ai/flock/skill/import');assert.strictEqual(sent[0][1].body,'# 新人格');assert.strictEqual(sent[0][1].headers['Content-Type'],'text/markdown; charset=utf-8');assert.strictEqual(q('#waterAiSkillFile').value,'');
     q('#waterAiSkillFile').files=[{name:'bad.md',size:8}];ex('readFlockSkillFile()');readers.at(-1).complete('# \uFFFD');assert(q('#waterAiSkillImport').disabled);assert(q('#waterAiSkillStatus').textContent.includes('UTF-8'));
     ex("selectedAccount='file-a';accountEpoch++");q('#waterAiSkillFile').files=[{name:'race.md',size:8}];ex('readFlockSkillFile()');const race=readers.at(-1);ex("selectedAccount='file-b';accountEpoch++;resetWaterAIState()");race.complete('# 迟到');assert(q('#waterAiSkillImport').disabled);assert.strictEqual(ex('waterAISkillDraft'),null);
   });
   await test('skill 导出下载附件携带冻结账号且不展示内容',async()=>{
     ex("selectedAccount='export-skill';accountEpoch++;waterAISkillBusy=false");let request;app.fetch=async(p,o)=>{request=[p,o];return {ok:true,status:200,blob:async()=>new Blob(['# private skill'],{type:'text/markdown'})}};const before=downloaded.length;await ex('exportFlockSkill()');assert.strictEqual(request[0],'/api/ai/flock/skill/export');assert.strictEqual(request[1].headers['X-Account-ID'],'export-skill');assert.strictEqual(downloaded.length,before+1);assert.strictEqual(downloaded.at(-1).download,'skill.md');assert(!q('#waterAiSkillStatus').textContent.includes('private skill'));
+  });
+  await test('study文件位于AI学习卡片并支持确认导入和账号隔离导出',async()=>{
+    const card=cardOf('flockLearningCard');for(const id of ['waterAiStudySize','waterAiStudyExport','waterAiStudyFile','waterAiStudyImport'])assert(card.includes('id="'+id+'"'));assert(card.includes('定时上传 skill.md 与 study.md 到 Telegram 收藏夹'));
+    ex("selectedAccount='study-a';accountEpoch++;waterAISkillBusy=false");app.loadFlockSkill=async()=>{};const sent=[];app.api=async(p,o)=>{sent.push([p,o]);return {ok:true}};q('#waterAiStudyFile').files=[{name:'study.md',size:12}];ex('readStudyFile()');readers.at(-1).complete('# 群内氛围');app.window.confirm=()=>true;await ex('importStudy()');assert.strictEqual(sent[0][0],'/api/ai/flock/study/import');assert.strictEqual(sent[0][1].body,'# 群内氛围');assert(q('#waterAiStudyImport').disabled);
+    let request;app.fetch=async(p,o)=>{request=[p,o];return {ok:true,status:200,blob:async()=>new Blob(['# 群内氛围'])}};await ex('exportStudy()');assert.strictEqual(request[0],'/api/ai/flock/study/export');assert.strictEqual(request[1].headers['X-Account-ID'],'study-a');assert.strictEqual(downloaded.at(-1).download,'study.md');
+  });
+  await test('四个水群编辑器明确引用study和knowledge且预算往返准确',async()=>{
+    assert.strictEqual((html.match(/study\.md \+ knowledge\.md 引用预算（0 不引用）/g)||[]).length,4);assert.strictEqual((html.match(/两份文件引用无上限/g)||[]).length,4);assert.strictEqual((html.match(/按需引用两份文件/g)||[]).length,4);
+    assert.strictEqual(ex('taskConfig({ai_flock_knowledge_chars:-1}).ai_flock_knowledge_chars'),-1);assert.notStrictEqual(ex('taskFingerprint({ai_flock_knowledge_chars:-1})'),ex('taskFingerprint({ai_flock_knowledge_chars:0})'));
+    for(const prefix of ['waterAiJob','brAiFlock','lkAiFlock','crAiFlock']){assert(html.includes('id="'+prefix+'KnowledgeOnDemand"'));ex("setIntegerFields('"+prefix+"',{},AI_FLOCK_LIMIT_SPECS)");q('#'+prefix+'KnowledgeChars').value='4567';q('#'+prefix+'KnowledgeUnlimited').checked=true;ex("syncKnowledgeLimit('"+prefix+"')");assert(q('#'+prefix+'KnowledgeChars').disabled);assert.strictEqual(ex("readIntegerFields('"+prefix+"',AI_FLOCK_LIMIT_SPECS).knowledge_chars"),-1);q('#'+prefix+'KnowledgeUnlimited').checked=false;ex("syncKnowledgeLimit('"+prefix+"')");assert.strictEqual(ex("readIntegerFields('"+prefix+"',AI_FLOCK_LIMIT_SPECS).knowledge_chars"),4567);ex("setIntegerFields('"+prefix+"',{knowledge_chars:-1},AI_FLOCK_LIMIT_SPECS)");assert(q('#'+prefix+'KnowledgeUnlimited').checked);ex("setIntegerFields('"+prefix+"',{},AI_FLOCK_LIMIT_SPECS)");assert(!q('#'+prefix+'KnowledgeUnlimited').checked);assert.strictEqual(q('#'+prefix+'KnowledgeChars').value,'2000')}
+  });
+  await test('四个水群编辑器按需知识开关独立保存回填和重置',async()=>{
+    const models={waterAiJob:'waterAIJobPayload',brAiFlock:null};
+    ex("selectedAccount='demand';accountEpoch++;watchedGroups=[{chat_id:'-1001',name:'群'}];aiProviders=[{id:'0123456789abcdef',enabled:true}];waterAIJobs=[{id:88,name:'按需任务',enabled:1,groups:'-1001',start_time:'09:00',end_time:'10:00',prompt:'聊',provider_ids:'0123456789abcdef',knowledge_on_demand:1}];openWaterAIJobForm(88)");assert(q('#waterAiJobKnowledgeOnDemand').checked);assert.strictEqual(JSON.parse(JSON.stringify(ex('waterAIJobPayload(waterAIJobs[0])'))).knowledge_on_demand,1);ex('resetWaterAIJobForm()');assert(!q('#waterAiJobKnowledgeOnDemand').checked);
+    for(const [type,prefix] of [['button_register','br'],['link_register','lk'],['code_register','cr']]){ex("selectedAccount='auto-"+type+"';accountEpoch++;resetAccountCaches();openAutoForm('"+type+"')");assert(!q('#'+prefix+'AiFlockKnowledgeOnDemand').checked);q('#'+prefix+'AiFlockKnowledgeOnDemand').checked=true;q('#'+prefix+'AiFlock').checked=true;q('#'+prefix+'AiFlockKnowledgeChars').value='500';ex("closeAutoForm('"+type+"');openAutoForm('"+type+"')");assert(!q('#'+prefix+'AiFlockKnowledgeOnDemand').checked)}
+  });
+  await test('知识编辑默认收起，点击展开不聚焦，收起留草稿且保存后收起',async()=>{
+    assert(html.includes('id="knowledgeEditFields" class="hidden"'));const textarea=html.match(/<textarea\b[^>]*id="knowledgeEditor"[^>]*>/)[0];assert(!textarea.includes('autofocus'));
+    ex("selectedAccount='knowledge-fold';accountEpoch++;resetKnowledge()");app.api=async()=>({content:'已有知识',bytes:12});await ex('loadKnowledge()');await new Promise(resolve=>setImmediate(resolve));assert(q('#knowledgeEditFields').classList.contains('hidden'));assert.strictEqual(q('#knowledgeEdit').getAttribute('aria-expanded'),'false');let focused=0;const focus=q('#knowledgeEditor').focus;q('#knowledgeEditor').focus=()=>focused++;
+    ex('toggleKnowledgeEditor()');assert(!q('#knowledgeEditFields').classList.contains('hidden'));assert.strictEqual(q('#knowledgeEdit').getAttribute('aria-expanded'),'true');assert.strictEqual(focused,0);q('#knowledgeEditor').value='未保存草稿';ex('knowledgeChanged();toggleKnowledgeEditor();toggleKnowledgeEditor()');assert.strictEqual(q('#knowledgeEditor').value,'未保存草稿');assert(ex('knowledgeDirty'));assert.strictEqual(focused,0);app.api=async()=>({ok:true,bytes:15});await ex('saveKnowledge()');assert(q('#knowledgeEditFields').classList.contains('hidden'));assert.strictEqual(q('#knowledgeEdit').textContent,'编辑知识');ex('toggleKnowledgeEditor();resetKnowledge()');assert(q('#knowledgeEditFields').classList.contains('hidden'));q('#knowledgeEditor').focus=focus;
+  });
+  await test('知识编辑独立保存并安全显示，忙时防重复且保存不丢新输入',async()=>{
+    ex("selectedAccount='knowledge-a';accountEpoch++;resetKnowledge()");app.api=async(p)=>p==='/api/ai/flock/knowledge'?{content:'# <script>知识</script>',bytes:30}:{};await ex('loadKnowledge()');await new Promise(resolve=>setImmediate(resolve));assert.strictEqual(q('#knowledgeEditor').value,'# <script>知识</script>');assert.strictEqual(q('#knowledgeEditor').innerHTML,'');assert(!q('#knowledgeSave').disabled);
+    q('#knowledgeEditor').value='# 新知识';ex('knowledgeChanged()');let done,sent=0;app.api=(p,o)=>{sent++;assert.strictEqual(p,'/api/ai/flock/knowledge');assert.strictEqual(o.method,'PUT');assert.strictEqual(JSON.parse(o.body).content,'# 新知识');return new Promise(r=>done=r)};const pending=ex('saveKnowledge()');await ex('saveKnowledge()');assert.strictEqual(sent,1);q('#knowledgeEditor').value='# 更新输入';ex('knowledgeChanged()');done({ok:true,bytes:10});await pending;assert.strictEqual(q('#knowledgeEditor').value,'# 更新输入');assert(ex('knowledgeDirty'));assert(q('#knowledgeStatus').textContent.includes('尚未保存'));
+  });
+  await test('知识读取及保存切换账号时忽略旧响应，不自动刷新覆盖草稿',async()=>{
+    ex("selectedAccount='knowledge-old';accountEpoch++;resetKnowledge()");let done;app.api=()=>new Promise(r=>done=r);const old=ex('loadKnowledge()');ex("selectedAccount='knowledge-new';accountEpoch++;resetKnowledge()");done({content:'旧账号知识'});await old;assert.strictEqual(q('#knowledgeEditor').value,'');assert(!ex('knowledgeLoaded'));
+    app.api=async()=>({content:'新账号知识',bytes:20});await ex('loadKnowledge()');await new Promise(resolve=>setImmediate(resolve));q('#knowledgeEditor').value='未保存草稿';ex('knowledgeChanged()');let sent=0;app.api=async p=>{if(p==='/api/ai/flock/knowledge')sent++;return {content:'服务器内容'}};await ex('loadKnowledge()');assert.strictEqual(sent,0);assert.strictEqual(q('#knowledgeEditor').value,'未保存草稿');
+    app.api=()=>new Promise(r=>done=r);const reload=ex('loadKnowledge(true)');q('#knowledgeEditor').value='载入期间的新输入';ex('knowledgeChanged()');done({content:'载入前的服务器内容'});await reload;assert.strictEqual(q('#knowledgeEditor').value,'载入期间的新输入');assert(ex('knowledgeDirty'));
+    app.api=()=>new Promise(r=>done=r);const save=ex('saveKnowledge()');ex("selectedAccount='knowledge-third';accountEpoch++;resetKnowledge()");done({ok:true});await save;assert.strictEqual(q('#knowledgeEditor').value,'');assert(!ex('knowledgeLoaded'));
+  });
+  await test('知识导入先本地读取再确认，校验格式大小UTF8并丢弃旧文件',async()=>{
+    ex("selectedAccount='knowledge-import';accountEpoch++;resetKnowledge()");app.api=async()=>({content:'已有知识'});await ex('loadKnowledge()');await new Promise(resolve=>setImmediate(resolve));for(const file of [{name:'x.txt',size:10},{name:'x.md',size:0},{name:'x.md',size:5*1024*1024+1}]){q('#knowledgeFile').files=[file];ex('readKnowledgeFile()');assert(q('#knowledgeImport').disabled)}
+    q('#knowledgeFile').files=[{name:'old.md',size:10}];ex('readKnowledgeFile()');const old=readers.at(-1);q('#knowledgeFile').files=[{name:'new.md',size:5*1024*1024}];ex('readKnowledgeFile()');const latest=readers.at(-1);assert(old.aborted);latest.complete('# 导入知识');old.complete('旧文件');let sent=0;app.api=async(p,o)=>{sent++;assert.strictEqual(p,'/api/ai/flock/knowledge/import');assert.strictEqual(o.body,'# 导入知识');return {ok:true,bytes:20}};app.window.confirm=()=>false;await ex('importKnowledge()');assert.strictEqual(sent,0);app.window.confirm=()=>true;await ex('importKnowledge()');assert.strictEqual(sent,1);assert.strictEqual(q('#knowledgeEditor').value,'# 导入知识');assert(!ex('knowledgeDirty'));
+    q('#knowledgeFile').files=[{name:'bad.md',size:10}];ex('readKnowledgeFile()');readers.at(-1).complete('\uFFFD');assert(q('#knowledgeImport').disabled);
+  });
+  await test('知识导出和收藏夹上传只使用已保存文档并保留账号范围',async()=>{
+    ex("selectedAccount='knowledge-export';accountEpoch++;resetKnowledge()");app.api=async()=>({content:'# 知识',bytes:8});await ex('loadKnowledge()');await new Promise(resolve=>setImmediate(resolve));let request;app.fetch=async(p,o)=>{request=[p,o];return {ok:true,status:200,blob:async()=>new Blob(['# 知识'])}};await ex('exportKnowledge()');assert.strictEqual(request[0],'/api/ai/flock/knowledge/export');assert.strictEqual(request[1].headers['X-Account-ID'],'knowledge-export');assert.strictEqual(downloaded.at(-1).download,'knowledge.md');let sent=0;app.api=async(p,o)=>{sent++;assert.strictEqual(p,'/api/ai/flock/knowledge/upload-now');assert.strictEqual(o._account.id,'knowledge-export');return {ok:true,date:'2026-11-12'}};await ex('uploadKnowledge()');assert.strictEqual(sent,1);assert(q('#knowledgeStatus').textContent.includes('已上传'));ex('knowledgeChanged()');await ex('uploadKnowledge()');assert.strictEqual(sent,1);
   });
   await test('AI API 模型发现使用未保存地址密钥和编辑ID，忙时防重复并安全填充列表',async()=>{
     ex("selectedAccount='models-a';accountEpoch++;aiProviders=[{id:'0123456789abcdef',note:'主线路',base:'https://saved.invalid/v1',model:'saved',enabled:true,key_present:true}];openAIProviderForm('0123456789abcdef')");q('#aiProviderBase').value='https://unsaved.invalid/v1';q('#aiProviderKey').value='';let blocked=0;app.api=async()=>{blocked++;return {models:[]}};await ex('discoverAIProviderModels()');assert.strictEqual(blocked,0);assert(q('#aiProviderModelsStatus').textContent.includes('地址已修改'));assert(q('#aiProviderModelsStatus').textContent.includes('请输入 API Key'));assert(!q('#aiProviderModelsBtn').disabled);
@@ -1343,6 +1632,10 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
   await test('模型发现表单变化和账号切换丢弃旧结果，新增不发送provider_id',async()=>{
     ex("selectedAccount='models-b';accountEpoch++;openAIProviderForm()");q('#aiProviderBase').value='https://new.invalid/v1';q('#aiProviderKey').value='new-key';let resolve,body;app.api=(_p,o)=>{body=JSON.parse(o.body);return new Promise(r=>resolve=r)};const pending=ex('discoverAIProviderModels()');q('#aiProviderBase').value='https://changed.invalid/v1';resolve({models:['stale-model']});await pending;assert.strictEqual(q('#aiProviderModelOptions').children.length,0);assert(!('provider_id' in body));
     let done;app.api=()=>new Promise(r=>done=r);q('#aiProviderBase').value='https://account.invalid/v1';const accountPending=ex('discoverAIProviderModels()');ex("selectedAccount='models-c';accountEpoch++;closeAIProviderForm()");done({models:['other-account-model']});await accountPending;assert.strictEqual(q('#aiProviderModelOptions').children.length,0);
+  });
+  await test('模型发现同时提供移动端可见十项列表并安全回填和清理',async()=>{
+    ex("selectedAccount='models-visible';accountEpoch++;openAIProviderForm()");q('#aiProviderBase').value='https://models.invalid/v1';q('#aiProviderKey').value='model-key';app.modelList=Array.from({length:10},(_,i)=>i===4?'<img src=x onerror=bad()>':'model-'+(i+1));app.api=async()=>({models:app.modelList});await ex('discoverAIProviderModels()');assert.strictEqual(q('#aiProviderModelOptions').children.length,10);assert.strictEqual(q('#aiProviderModelList').children.length,10);assert(!q('#aiProviderModelList').classList.contains('hidden'));assert.strictEqual(q('#aiProviderModelList').children[4].textContent,'<img src=x onerror=bad()>');assert.strictEqual(q('#aiProviderModelList').innerHTML,'');q('#aiProviderModelList').value='<img src=x onerror=bad()>';ex('selectAIProviderModel()');assert.strictEqual(q('#aiProviderModel').value,'<img src=x onerror=bad()>');assert(q('#aiProviderModelsStatus').textContent.includes('<img src=x onerror=bad()>'));assert(q('#aiProviderModelList').classList.contains('hidden'),'选择模型后列表必须收起');assert(html.includes("onkeydown=\"if(event.key==='Escape')hideAIProviderModelList()\""));ex('hideAIProviderModelList()');assert(q('#aiProviderModelList').classList.contains('hidden'));
+    ex('clearAIProviderModelChoices()');assert.strictEqual(q('#aiProviderModelList').children.length,0);assert(q('#aiProviderModelList').classList.contains('hidden'));assert(!q('#aiProviderModelsBtn').disabled);assert(html.includes('size="10"')&&html.includes('oninput="clearAIProviderModelChoices()"'));assert(html.includes('.model-choice-list option{min-height:44px'));
   });
   await test('运行与排队任务显示停止取消按钮并正确启用停止全部',async()=>{
     app.runTask={id:701,type:'signin',name:'运行任务',target:'@dummy',command:'/sign',enabled:1,running:true,queued:false};app.queueTask={id:702,type:'signin',name:'排队任务',target:'@dummy',command:'/sign',enabled:1,running:false,queued:true};
@@ -1359,7 +1652,7 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     ex("selectedAccount='old-stop';accountEpoch++;autos=[runTask];renderAutoList('signin')");const oldHandler=q('#aListSign').onclick;let requests=[];app.api=async(p,o)=>{requests.push([p,o]);return {ok:true,stopped:[701,702]}};app.loadAutos=async()=>{};app.window.confirm=()=>true;
     ex("selectedAccount='new-stop';accountEpoch++;autos=[{...runTask,name:'新账号同ID'}]");oldHandler({target:{closest:()=>({dataset:{autoAction:'stop',autoId:'701'}})}});assert.strictEqual(requests.length,0);
     ex('autos=[runTask,queueTask];autoStopAllBusy=false');app.window.confirm=()=>false;await ex('stopAllAutos()');assert.strictEqual(requests.length,0);
-    let done;app.window.confirm=message=>{assert(message.includes('中止当前步骤'));return true};app.api=(p,o)=>{requests.push([p,o]);return new Promise(r=>done=r)};const stopping=ex('stopAllAutos()');await Promise.resolve();const duplicate=ex('stopAllAutos()');assert.strictEqual(requests.length,1);assert.strictEqual(requests[0][0],'/api/autos/stop-all');assert.strictEqual(requests[0][1]._account.id,'new-stop');done({ok:true,stopped:[701,702]});await stopping;await duplicate;assert.strictEqual(ex('autoStopAllBusy'),false);
+    let done;app.window.confirm=message=>{assert(message.includes('中止当前步骤'));return true};app.api=(p,o)=>{requests.push([p,o]);return new Promise(r=>done=r)};const stopping=ex('stopAllAutos()');await Promise.resolve();const duplicate=ex('stopAllAutos()');assert.strictEqual(requests.length,1);assert.strictEqual(requests[0][0],'/api/autos/stop-all?type=signin');assert.strictEqual(requests[0][1]._account.id,'new-stop');done({ok:true,stopped:[701,702]});await stopping;await duplicate;assert.strictEqual(ex('autoStopAllBusy'),false);
   });
   const realAnomalyLoader=app.loadAnomalies;
   await test('异常分类走独立接口并安全渲染状态次数时间回复',async()=>{
@@ -1391,11 +1684,40 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     ex("selectedAccount='stale-b';accountEpoch++;anomalySeq++;anomalies=[]");done({count:1,items:[{id:10,name:'迟到异常',type:'signin',status:'failed'}]});await pending;assert.strictEqual(ex('anomalies.length'),0);assert(!q('#logList').innerHTML.includes('迟到异常'));
   });
   await test('隐藏时暂停五秒轮询，回前台立即刷新当前分类',async()=>{
-    let tick,states=0,logs=0;app.setInterval=fn=>{tick=fn;return 99};app.clearInterval=()=>{};app.api=async()=>({});
-    app.loadState=()=>{states++};app.loadLogs=()=>{logs++};for(const name of ['loadAccounts','loadSettings','loadRules','loadAutos','loadRuleGroups','renderAccounts','renderEmojis','pickAction','pickGrabAct','applyTheme'])app[name]=()=>{};
+    let tick,states=0,logs=0,skills=0;app.setInterval=fn=>{tick=fn;return 99};app.clearInterval=()=>{};app.api=async()=>({});
+    app.loadState=()=>{states++};app.loadLogs=()=>{logs++};app.loadFlockSkill=()=>{skills++};for(const name of ['loadAccounts','loadSettings','loadRules','loadAutos','loadRuleGroups','renderAccounts','renderEmojis','pickAction','pickGrabAct','applyTheme'])app[name]=()=>{};
     ex("activeTab='logs';bootstrapTimer=null");await ex('bootstrap()');states=logs=0;
-    ex("document.visibilityState='hidden'");tick();assert.strictEqual(states,0);assert.strictEqual(logs,0);ex('document.listeners.visibilitychange()');assert.strictEqual(states,0);assert.strictEqual(logs,0);
-    ex("document.visibilityState='visible'");assert.strictEqual(ex('pageIsHidden()'),false);ex('refreshVisibleTab()');assert.strictEqual(states,1);assert.strictEqual(logs,1);assert(js.includes("addEventListener('visibilitychange',()=>{if(!pageIsHidden())refreshVisibleTab()})"));tick();assert.strictEqual(states,2);assert.strictEqual(logs,2);
+    ex("document.visibilityState='hidden'");tick();assert.strictEqual(states,0);assert.strictEqual(logs,0);assert.strictEqual(skills,0);ex('document.listeners.visibilitychange()');assert.strictEqual(states,0);assert.strictEqual(logs,0);
+    ex("document.visibilityState='visible'");assert.strictEqual(ex('pageIsHidden()'),false);ex('refreshVisibleTab()');assert.strictEqual(states,1);assert.strictEqual(logs,1);assert(js.includes("addEventListener('visibilitychange',()=>{if(!pageIsHidden())refreshVisibleTab()})"));tick();assert.strictEqual(states,2);assert.strictEqual(logs,2);assert.strictEqual(skills,0);ex("activeTab='settings';waterAISkillBusy=false;waterAISkillLoading=false");tick();assert.strictEqual(skills,1);ex('waterAISkillBusy=true');tick();assert.strictEqual(skills,1);ex("waterAISkillBusy=false;waterAISkillLoading=true");tick();assert.strictEqual(skills,1);ex("waterAISkillLoading=false;activeTab='autos'");tick();assert.strictEqual(skills,1);assert(js.includes('setInterval(pollVisibleState,5000)'));assert(js.includes('loadFlockSkill(true)'));
+  });
+  await test('日志导出CSV和加载更早携带分类搜索与游标',async()=>{
+    assert(html.includes('onclick="exportLogs()"')&&html.includes('id="logMore"'));
+    ex("selectedAccount='log-more';accountEpoch++;logKind='signin';logQ='x';logBefore=0;logHasMore=false");
+    assert(js.includes("'/api/logs/export?kind='+encodeURIComponent(logKind)"));assert(js.includes("logQ?('&q='+encodeURIComponent(logQ))"));assert(js.includes("link.download='tg-persona-logs.csv'"));
+    const req=[];app.api=async(p,o)=>{req.push([p,o]);return {hits:[{id:42,ts:1,action:'signin',ok:1,detail:{}}],has_more:true}};
+    ex("logOpenIds.clear();document.querySelector('#logList').innerHTML='';logBefore=99;logHasMore=true");
+    await ex('loadMoreLogs()');assert(req[0][0].includes('before=99')&&req[0][0].includes('n=80'));assert.strictEqual(ex('logBefore'),42);assert(ex('logHasMore'));
+    ex('logBefore=0;logHasMore=false;loadMoreLogs()');assert.strictEqual(req.length,1);
+  });
+  await test('AI用量按日功能线路展示且失败不破坏页面',async()=>{
+    ex("selectedAccount='usage';accountEpoch++;aiUsageBusy=false");app.api=async p=>{assert.strictEqual(p,'/api/ai/usage?days=14');return {days:[{day:'2026-11-12',input_tokens:12,output_tokens:3}],features:[{feature:'ai_flock',input_tokens:12,output_tokens:3}],providers:[{note:'主线路',input_tokens:12,output_tokens:3}]}};
+    await ex('loadAIUsage()');const body=q('#aiUsageBody');assert.strictEqual(body.children.length,1);assert.strictEqual(body.innerHTML,'');const wrap=body.children[0],labels=[...new Set((wrap.children||[]).map(node=>node.textContent))];assert(labels.some(v=>String(v).includes('最近 14 天')));assert(labels.some(v=>String(v).includes('AI 水群')));assert(labels.some(v=>String(v).includes('主线路')));
+    app.api=async()=>{throw new Error('mock usage error')};await ex('loadAIUsage()');assert(q('#aiUsageBody').textContent.includes('用量加载失败'));
+  });
+  await test('知识引用预览只读提交文本字数与按需模式',async()=>{
+    ex("selectedAccount='kp';accountEpoch++;aiProvidersLoaded=true");q('#knowledgePreviewText').value='CF 522 怎么办';q('#knowledgePreviewChars').value='500';q('#knowledgePreviewOnDemand').value='1';
+    let request;app.api=async(p,o)=>{request=[p,o];return {mode:'relevant',chars:500,reason:'提问或求助，引用约 500 字',preview:'知识片段'}};
+    await ex('previewKnowledge()');assert.strictEqual(request[0],'/api/ai/flock/knowledge/preview');assert.deepStrictEqual(JSON.parse(request[1].body),{text:'CF 522 怎么办',knowledge_chars:500,knowledge_on_demand:1});assert(q('#knowledgePreviewResult').textContent.includes('提问或求助，引用约 500 字'));assert(q('#knowledgePreviewResult').textContent.includes('自动知识：已关闭'));assert(q('#knowledgePreviewResult').textContent.includes('知识片段'));assert(!q('#knowledgePreviewBtn').disabled);
+    app.api=async()=>({mode:'',chars:0,preview:'',reason:'该消息不会引用知识'});await ex('previewKnowledge()');assert(q('#knowledgePreviewResult').textContent.includes('该消息不会引用知识'));
+  });
+  await test('自动备份保存账号时间密码备注且立即备份提示结果',async()=>{
+    ex("selectedAccount='backup';accountEpoch++;autoBackupBusy=false");app.api=async p=>({enabled:true,time:'04:30',account:'default',caption_password:true,password_present:true,last_run:'2026-11-12 04:30',last_error:'',accounts:[{id:'default',label:'默认',logged_in:true,phase:'ready'},{id:'second',label:'小号',logged_in:false,phase:'idle'}]});
+    await ex('loadAutoBackup()');assert(q('#autoBackupEnabled').checked);assert.strictEqual(q('#autoBackupPassword').value,'');assert(q('#autoBackupPassword').placeholder.includes('留空不修改'));
+    const options=q('#autoBackupAccount').children;assert.strictEqual(options.length,2);assert.strictEqual(options[0].value,'default');assert(options[1].textContent.includes('小号'));
+    let request;app.api=async(p,o)=>{if(o&&o.method==='PUT')request=[p,o];return o&&o.method==='PUT'?{ok:true}:{enabled:false,accounts:[]}};ex('autoBackupBusy=false');q('#autoBackupTime').value='05:15';q('#autoBackupAccount').value='second';q('#autoBackupCaptionPassword').checked=true;q('#autoBackupPassword').value='secret123';
+    await ex('saveAutoBackup()');assert.strictEqual(request[0],'/api/migration/auto-backup');assert.deepStrictEqual(JSON.parse(request[1].body),{enabled:1,time:'05:15',account:'second',caption_password:1,password:'secret123'});
+    let ran=false;app.api=async(p,o)=>{if(p==='/api/migration/auto-backup/run'){ran=true;return {ok:true,file:'tg-persona-migration-1.tgp',removed:2}}return {enabled:true,time:'05:15',account:'second',caption_password:true,password_present:true,last_run:'2026-11-12 05:15',last_error:'',accounts:[{id:'default',label:'默认',logged_in:true}]}};app.window.confirm=()=>true;await ex('runAutoBackupNow()');assert(ran);assert(q('#autoBackupStatus').textContent.includes('2026-11-12 05:15'));assert(!q('#autoBackupNow').disabled);
+    ex('autoBackupBusy=false');q('#autoBackupEnabled').checked=false;ex('syncAutoBackupForm()');assert(q('#autoBackupFields').classList.contains('hidden'));
   });
   await test('日志轮询重绘保留当前展开详情',async()=>{
     assert(js.includes('let logOpenIds=new Set()'));
@@ -1404,13 +1726,19 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(js.includes('data-log-id='));
     assert(!js.includes('class="logitem" onclick="this.classList.toggle'));
   });
+  await test('日志清理操作在列表上方吸顶且手机触控尺寸足够',async()=>{
+    const start=html.indexOf('<section id="tab-logs">'),end=html.indexOf('</section>',start),part=html.slice(start,end);
+    const toolbar=part.indexOf('class="log-toolbar"'),list=part.indexOf('id="logList"');assert(toolbar>0&&toolbar<list);
+    assert.strictEqual((part.match(/onclick="clearLogs\(/g)||[]).length,2);assert(part.includes('class="danger" onclick="clearLogs(0)"'));
+    assert(html.includes('.log-toolbar{position:sticky'));assert(html.includes('.log-toolbar input,.log-toolbar button{min-height:44px}'));assert(html.includes('overflow-x:hidden;overflow-x:clip'));
+  });
   await test('系统更新位于设置最顶部且默认收起',async()=>{
     const start=html.indexOf('<section id="tab-settings">'),end=html.indexOf('</section>',start);
     const part=html.slice(start,end),update=part.indexOf('系统更新'),accounts=part.indexOf('Telegram 账号');
     assert(update>0&&accounts>update);
     const before=part.slice(Math.max(0,update-300),update);
-    assert(before.includes('class="card fold"'));
-    assert(!before.includes('class="card fold open"'));
+    assert(before.includes('class="fold sub-fold"'));
+    assert(!before.includes('class="fold sub-fold open"')&&!before.includes('class="card fold open"'));
   });
   await test('品牌显示当前版本并在每次面板启动静默检测更新',async()=>{
     assert(html.includes('id="brandVersion"'));
@@ -1418,6 +1746,108 @@ async function test(name,fn){await fn();count++;console.log('通过：'+name)}
     assert(js.includes('function renderBrandVersion(s)'));
     assert(js.includes("autoCheckVersion();"));
     assert(js.includes("await loadUpd(true)"));
+  });
+  await test('号主指令默认关闭限额为零，关键词必填且单独保存',async()=>{
+    ex("selectedAccount='owner-settings';accountEpoch++;resetOwnerAIUI()");
+    assert(!q('#ownerCorrectionEnabled').checked&&!q('#ownerSummaryEnabled').checked&&!q('#ownerPauseEnabled').checked);
+    for(const id of ['ownerDailyTotal','ownerDailyLearning','ownerDailyFlock'])assert.strictEqual(q('#'+id).value,'0');
+    q('#ownerCorrectionEnabled').checked=true;let sent=0;app.api=async()=>{sent++;return {ok:true}};
+    await ex('saveOwnerAISettings()');assert.strictEqual(sent,0);
+    q('#ownerCorrectionKeywords').value='改正';q('#ownerSummaryKeywords').value='最近他们聊了什么';q('#ownerSummaryEnabled').checked=true;q('#ownerPauseEnabled').checked=true;q('#ownerPauseMinutes').value='15';
+    let request;app.api=async(p,o)=>{request=[p,o];return {ok:true}};await ex('saveOwnerAISettings()');
+    assert.strictEqual(request[0],'/api/ai/flock/owner-settings');const body=JSON.parse(request[1].body);
+    assert.strictEqual(body.flock_owner_pause_minutes,15);assert.strictEqual(body.flock_correction_keywords,'改正');assert.strictEqual(body.flock_daily_total_tokens,0);assert.strictEqual(request[1]._account.id,'owner-settings');
+  });
+  await test('号主设置与记忆迟到响应不能泄露到新账号',async()=>{
+    ex("selectedAccount='owner-a';accountEpoch++;resetOwnerAIUI()");let done;app.api=()=>new Promise(r=>done=r);const pending=ex('loadOwnerAISettings()');
+    ex("selectedAccount='owner-b';accountEpoch++;resetOwnerAIUI()");done({settings:{flock_correction_enabled:'1',flock_correction_keywords:'旧账号内容'}});await pending;assert.strictEqual(q('#ownerCorrectionKeywords').value,'');assert(!q('#ownerCorrectionEnabled').checked);
+    q('#memoryFile').value='study';app.api=()=>new Promise(r=>done=r);const memory=ex('loadMemory()');
+    ex("selectedAccount='owner-c';accountEpoch++;resetOwnerAIUI()");done({items:[{body:'旧账号私密记忆'}],version:'1'});await memory;assert.strictEqual(q('#memoryList').children.length,0);
+  });
+  await test('学习累计统计区分主人群友和待处理，预算显示不限额',async()=>{
+    app.metricsFixture={sample_count:0,learning_metrics:{last_collected:1794529129,today:{owner:{collected:2,learned:2},group:{collected:40,learned:40}},total:{owner:{collected:2,learned:2,pending:0},group:{collected:40,learned:40,pending:0}}}};
+    ex('renderLearningMetrics(metricsFixture)');assert.strictEqual(q('#waterAiSkillSamples').textContent,'待学习样本：0');
+    const lines=q('#learningMetrics').children.map(n=>n.textContent+n.children.map(item=>item.textContent).join(''));assert(lines.some(v=>v.includes('群友：今日采集 40')));assert(lines.some(v=>v.includes('主人：今日采集 2')));
+    assert(!q('#learningLastCollected').textContent.includes('1794529129'));
+    app.budgetFixture=[{label:'全部 AI',used:42,limit:0,paused:false}];ex('renderOwnerAIBudgets(budgetFixture)');assert(q('#ownerBudgetStatus').textContent.includes('不限额'));
+  });
+  await test('记忆查看只显示纯文本，保存携带版本与冻结账号',async()=>{
+    ex("selectedAccount='memory-edit';accountEpoch++;resetOwnerAIUI()");q('#memoryFile').value='study';q('#memorySearch').value='电影';
+    app.api=async(p,o)=>{assert(p.includes('file=study')&&p.includes('q='));return {version:'v1',offset:0,total:1,items:[{start:0,body:'<img src=x>电影',group:'本群',created_at:1794529129,pinned:false,source:'learning'}]}};
+    await ex('loadMemory()');const row=q('#memoryList').children[0];assert.strictEqual(row.children[1].textContent,'<img src=x>电影');assert.strictEqual(row.children[1].innerHTML,'');
+    let request;const loader=app.loadMemory;app.loadMemory=async()=>{};app.api=async(p,o)=>{request=[p,o];return {ok:true}};app.memoryEditBody={version:'v1',body:'改正后的内容'};await ex("mutateMemory('study',0,memoryEditBody,accountContext())");
+    assert.strictEqual(request[0],'/api/ai/flock/memory/study/0');assert.deepStrictEqual(JSON.parse(request[1].body),{version:'v1',body:'改正后的内容'});assert.strictEqual(request[1]._account.id,'memory-edit');app.loadMemory=loader;
+  });
+  await test('水群测试入口只列当前任务监听群，打开不发送消息',async()=>{
+    ex("selectedAccount='test-flock-a';accountEpoch++;resetWaterAITest();watchedGroups=[{chat_id:'-1',name:'群<img>'},{chat_id:'-2',name:'别的群'}];waterAIJobs=[{id:1,name:'任务<img>',groups:'-1,-9',enabled:0}]");
+    let sent=0;app.api=async(p,o)=>{if(o&&o.method==='POST')sent++;return {ok:true}};ex('renderWaterAIJobs()');assert(q('#waterAiJobsList').innerHTML.includes('data-water-action="test"'));await ex("mutateWaterAIJob('1','test')");    assert.strictEqual(sent,0);assert(!q('#waterAiTestForm').classList.contains('hidden'));assert.strictEqual(q('#waterAiTestTitle').textContent,'水群测试：任务<img>');assert.strictEqual(q('#waterAiTestGroup').value,'-1');assert.strictEqual(q('#waterAiTestGroup').children.length,2);assert.strictEqual(q('#waterAiTestGroup').children[1].textContent,'群<img>');
+    q('#waterAiTestText').value=' ';await ex('runWaterAITest()');assert.strictEqual(sent,0);q('#waterAiTestGroup').value='-2';q('#waterAiTestText').value='聊聊天';await ex('runWaterAITest()');assert.strictEqual(sent,0);ex('closeWaterAITest()');assert(q('#waterAiTestForm').classList.contains('hidden'));
+  });
+  await test('水群测试只提交一次模型要求并显示实际回复',async()=>{
+    ex("selectedAccount='test-flock-b';accountEpoch++;resetWaterAITest();watchedGroups=[{chat_id:'-1',name:'测试群'}];waterAIJobs=[{id:7,name:'测试任务',groups:'-1'}];openWaterAITest(7)");q('#waterAiTestText').value='请问大家晚饭吃什么';let done;const requests=[];app.api=(p,o)=>{requests.push([p,o]);return new Promise(r=>done=r)};app.loadWaterAIJobs=async()=>{};
+    const pending=ex('runWaterAITest()');await ex('runWaterAITest()');assert.strictEqual(requests.length,1);assert.strictEqual(requests[0][0],'/api/ai/flock/jobs/7/test');assert.strictEqual(requests[0][1]._account.id,'test-flock-b');assert.deepStrictEqual(JSON.parse(requests[0][1].body),{chat_id:'-1',text:'请问大家晚饭吃什么'});assert(q('#waterAiTestSend').disabled&&q('#waterAiTestGroup').disabled&&q('#waterAiTestText').disabled);
+    done({ok:true,sent:true,reply:'<img src=x>晚饭吃啥呢'});await pending;assert(q('#waterAiTestResult').textContent.includes('<img src=x>晚饭吃啥呢'));assert.strictEqual(q('#waterAiTestResult').innerHTML,'');assert(!q('#waterAiTestSend').disabled);
+  });
+  await test('水群测试未发送与失败明确提示，切换账号忽略迟到结果',async()=>{
+    app.api=async()=>({ok:true,sent:false,reason:'模型选择不回复'});await ex('runWaterAITest()');assert.strictEqual(q('#waterAiTestResult').textContent,'未发送：模型选择不回复');app.api=async()=>{throw new Error('模型不可用')};await ex('runWaterAITest()');assert(q('#waterAiTestResult').textContent.includes('测试失败：模型不可用'));assert(!q('#waterAiTestSend').disabled);
+    let done;app.api=()=>new Promise(r=>done=r);const pending=ex('runWaterAITest()');ex("selectedAccount='test-flock-c';accountEpoch++;resetWaterAIState()");q('#waterAiTestResult').textContent='新账号';done({sent:true,reply:'旧账号回复'});await pending;assert.strictEqual(q('#waterAiTestResult').textContent,'新账号');assert.strictEqual(ex('waterAITestJobId'),null);assert.strictEqual(q('#waterAiTestText').value,'');assert(!q('#waterAiTestSend').disabled);
+  });
+  await test('引用明细在日志轮询重绘后保持展开且无需重复请求',async()=>{
+    app.loadLogs=realLogLoader;ex("selectedAccount='trace-a';accountEpoch++;logKind='ai_flock';logQ='';resetLogOpenState();logOpenIds.add('90')");app.traceHit={id:90,ts:1,action:'ai_flock',ok:1,chat_id:'-1',detail:{has_trace:true}};
+    let done,traceCalls=0;app.api=async path=>{if(path.includes('/traces/')){traceCalls++;return new Promise(r=>done=r)}return {hits:[app.traceHit],counts:{}}};
+    const pending=ex('loadFlockTrace(90)');await ex('loadFlockTrace(90)');assert.strictEqual(traceCalls,1);await ex('loadLogs()');assert(q('#logList').innerHTML.includes('正在加载引用'));
+    done({references:{study:'<img src=x onerror=bad()>私有记忆'}});await pending;await ex('loadLogs()');const first=q('#logList').innerHTML;assert(first.includes('logitem open'));assert(first.includes('收起引用明细'));assert(first.includes('&lt;img'));assert(!first.includes('<img src=x'));assert(first.includes('私有记忆'));
+    await ex('loadLogs()');assert.strictEqual(q('#logList').innerHTML,first);assert.strictEqual(traceCalls,1);
+    await ex('loadFlockTrace(90)');await ex('loadLogs()');assert(!q('#logList').innerHTML.includes('<pre class="trace-body">'));await ex('loadFlockTrace(90)');await ex('loadLogs()');assert(q('#logList').innerHTML.includes('私有记忆'));assert.strictEqual(traceCalls,1);
+  });
+  await test('引用请求切换账号或清空日志后不能恢复旧账号明细',async()=>{
+    ex("selectedAccount='trace-old';accountEpoch++;resetLogOpenState()");let done;app.api=()=>new Promise(r=>done=r);const pending=ex('loadFlockTrace(91)');ex("selectedAccount='trace-new';accountEpoch++;resetLogOpenState()");done({references:{study:'旧账号内容'}});await pending;assert.strictEqual(ex('logTraceCache.size'),0);
+    app.api=async()=>{throw new Error('读取失败')};await ex('loadFlockTrace(91)');assert.strictEqual(ex('logTraceCache.size'),0);app.api=async()=>({references:{study:'新账号内容'}});await ex('loadFlockTrace(91)');assert(ex('logTraceCache.get("91").text.includes("新账号内容")'));ex('resetLogOpenState()');assert.strictEqual(ex('logTraceCache.size'),0);
+  });
+  await test('后台水群测试提交后切后台不中断，回前台只读取状态',async()=>{
+    ex("selectedAccount='background-test';accountEpoch++;resetWaterAITest();document.visibilityState='visible';watchedGroups=[{chat_id:'-1',name:'我的群'}];waterAIJobs=[{id:9,name:'后台测试',groups:'-1'}];openWaterAITest(9)");q('#waterAiTestText').value='打招呼';const calls=[];
+    app.api=async(p,o)=>{calls.push([p,o]);if(o?.method==='POST')return {queued:true,running:true,run_id:'r1',stage:'queued',chat_id:'-1'};return {running:false,run_id:'r1',stage:'sent',sent:true,reply:'后台测试已完成',chat_id:'-1'}};app.loadWaterAIJobs=async()=>{};
+    await ex('runWaterAITest()');assert(q('#waterAiTestSend').disabled);assert(!q('#waterAiTestClose').disabled);assert.strictEqual(calls.length,1);
+    ex("document.visibilityState='hidden'");await ex('pollWaterAITest()');assert.strictEqual(calls.length,1);
+    ex("document.visibilityState='visible'");await ex('pollWaterAITest()');assert.strictEqual(calls[1][0],'/api/ai/flock/jobs/9/test-status');assert(q('#waterAiTestResult').textContent.includes('后台测试已完成'));assert(!q('#waterAiTestSend').disabled);
+    ex('closeWaterAITest();openWaterAITest(9)');await Promise.resolve();assert.strictEqual(calls.filter(([,o])=>o?.method==='POST').length,1);
+  });
+  await test('群聊总结不限制长度开关可以独立保存和回填',async()=>{
+    ex("selectedAccount='summary-unlimited';accountEpoch++;resetOwnerAIUI()");q('#ownerSummaryUnlimitedEnabled').checked=true;let body;app.api=async(_p,o)=>{body=JSON.parse(o.body);return {ok:true}};await ex('saveOwnerAISettings()');assert.strictEqual(body.flock_summary_unlimited,1);
+    ex('resetOwnerAIUI()');assert(!q('#ownerSummaryUnlimitedEnabled').checked);app.api=async()=>({settings:{flock_summary_unlimited:'1'}});await ex('loadOwnerAISettings()');assert(q('#ownerSummaryUnlimitedEnabled').checked);
+  });
+  const personaNodes=(node=q('#personaBody'))=>[node,...node.children.flatMap(child=>personaNodes(child))];
+  const personaBtn=label=>personaNodes().find(n=>n.textContent===label&&n.type==='button');
+  const personaInput=label=>personaNodes().find(n=>n.textContent===label&&n.children.length)?.children[0];
+  const personaSummaryData={items:[],runs:[],timezone:'UTC+08:00'};
+  function personaAPI(requests=[]){app.api=async(p,o={})=>{requests.push([p,o]);if(p==='/api/watched')return {groups:[{chat_id:'123',name:'<img src=x>'}]};if(p==='/api/persona/profiles')return {items:[]};if(p==='/api/persona/summaries')return o.method?{ok:true}:personaSummaryData;return {items:[]}};return requests}
+  await test('定时摘要默认关闭且保存监听群主题时段和冻结账号',async()=>{
+    ex("selectedAccount='persona-a';accountEpoch++;resetPersonaCenter()");const requests=personaAPI();await ex("loadPersona('summaries')");
+    assert.strictEqual(personaInput('启用定时摘要').checked,false);personaInput('名称').value='每日摘要';personaInput('<img src=x>').checked=true;personaInput('关注主题').value='版本发布';
+    await personaBtn('保存').onclick();const saved=requests.find(([p,o])=>o.method==='POST');assert(saved);assert.strictEqual(saved[1]._account.id,'persona-a');
+    assert.deepStrictEqual(JSON.parse(saved[1].body),{name:'每日摘要',enabled:false,groups:['123'],at:'21:00',hours:24,message_limit:200,topics:'版本发布',provider_ids:[]});
+  });
+  await test('摘要保存中重复点击只提交一次且旧按钮不能写入新账号',async()=>{
+    ex("selectedAccount='persona-a';accountEpoch++;resetPersonaCenter()");personaAPI();await ex("loadPersona('summaries')");const save=personaBtn('保存');let done;const requests=[];app.api=(p,o)=>{requests.push([p,o]);return new Promise(r=>done=r)};
+    const pending=save.onclick();await save.onclick();assert.strictEqual(requests.length,1);ex("selectedAccount='persona-b';accountEpoch++;resetPersonaCenter()");done({ok:true});await pending;await save.onclick();assert.strictEqual(requests.length,1);assert.strictEqual(q('#personaBody').children.length,0);
+  });
+  await test('执行中心账号A到B到A的迟到数据和错误均不能回填',async()=>{
+    ex("selectedAccount='persona-a';accountEpoch++;resetPersonaCenter()");const waits=[];app.api=()=>new Promise((resolve,reject)=>waits.push({resolve,reject}));const pending=ex("loadPersona('runs')");
+    ex("selectedAccount='persona-b';accountEpoch++;resetPersonaCenter();selectedAccount='persona-a';accountEpoch++;resetPersonaCenter()");waits[0].resolve({items:[{id:'secret',name:'private'}]});waits[1].resolve({checkpoints:[],deletions:[]});await pending;assert.strictEqual(q('#personaBody').children.length,0);
+    const failed=ex("loadPersona('profiles')");ex("selectedAccount='persona-b';accountEpoch++;resetPersonaCenter()");waits[2].reject(new Error('old private error'));await failed;assert(!q('#personaStatus').textContent.includes('private'));
+  });
+  await test('历史回放按钮只采集或比较快照且结果纯文本显示',async()=>{
+    ex("selectedAccount='persona-a';accountEpoch++;resetPersonaCenter()");const requests=[];app.api=async(p,o={})=>{requests.push([p,o]);if(p==='/api/autos')return {autos:[{id:3,name:'test'}]};if(p==='/api/persona/replays')return {items:[{id:8,name:'<script>x</script>',created:1}]};return {changed:true,notice:'<img src=x>'}};
+    await ex("loadPersona('replays')");await personaBtn('对比采集时与当前配置').onclick();assert(requests.some(([p,o])=>p==='/api/persona/replays/8/compare'&&o.method==='POST'));assert(q('#personaDetail').textContent.includes('<img src=x>'));assert(!requests.some(([p])=>/\/run$/.test(p)));
+  });
+  await test('记忆恢复按钮带查看差异时的摘要且冲突选择精确提交',async()=>{
+    const requests=[];app.api=async(p,o={})=>{requests.push([p,o]);if(p.includes('versions?'))return {items:[{id:5,created:1,reason:'旧版本',source:{}}]};if(p.endsWith('/conflicts'))return {items:[{id:9,old_body:'允许',new_body:'不允许',source:{}}]};if(p.endsWith('/versions/5'))return {diff:'-当前\n+旧版',digest:'current-digest'};return {ok:true}};
+    await ex("loadPersona('memory')");await personaBtn('查看差异 / 恢复').onclick();await personaBtn('恢复此版本').onclick();const restore=requests.find(([p])=>p.endsWith('/restore'));assert.deepStrictEqual(JSON.parse(restore[1].body),{digest:'current-digest'});await personaBtn('采用新说法').onclick();const conflict=requests.find(([p,o])=>p.endsWith('/conflicts/9')&&o.method==='POST');assert.deepStrictEqual(JSON.parse(conflict[1].body),{choice:'new'});
+  });
+  await test('模型能力档案保存精确参数并通过按钮探测',async()=>{
+    const requests=[];app.api=async(p,o={})=>{requests.push([p,o]);if(p==='/api/persona/profiles')return {items:[{id:'p1',note:'test',model:'m',profile:{}}]};return {ok:true}};await ex("loadPersona('profiles')");
+    personaInput('思考参数').value='reasoning_effort';personaInput('支持的思考档位（逗号分隔，留空不限制）').value='minimal,high';personaInput('输出额度参数').value='max_completion_tokens';personaInput('最大输出 Token（留空不限制）').value='2048';personaInput('输入价格').value='2';
+    await personaBtn('保存档案').onclick();const request=requests.find(([p,o])=>o.method==='PUT');const body=JSON.parse(request[1].body);assert.strictEqual(body.max_output_tokens,2048);assert.strictEqual(body.input_price,2);assert.deepStrictEqual(body.reasoning_levels,['minimal','high']);assert.strictEqual(body.vision,null);await personaBtn('探测已保存的参数').onclick();assert(requests.some(([p,o])=>p.endsWith('/p1/probe')&&o.method==='POST'));
   });
   console.log(`前端回归 ${count} 项全部通过`);
 })().catch(e=>{console.error(e);process.exitCode=1});

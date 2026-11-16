@@ -140,6 +140,7 @@ class AccountsTest(unittest.IsolatedAsyncioTestCase):
         # Import a physical temporary copy: main's BASE/DATA are never real paths.
         destination = self.base / 'main.py'
         shutil.copyfile(ROOT / 'main.py', destination)
+        shutil.copyfile(ROOT / 'knowledge.md', self.base / 'knowledge.md')
         spec = importlib.util.spec_from_file_location('persona_offline_main', destination)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -208,6 +209,121 @@ class AccountsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.req('GET', '/api/state', '../bad')).status_code, 401)
         self.assertEqual((await self.req('GET', '/api/accounts')).status_code, 401)
 
+    async def test_knowledge_routes_are_authenticated_and_account_isolated(self):
+        aid = await self.create()
+        self.assertIsNot(self.rt().knowledge_lock, self.rt(aid).knowledge_lock)
+        for owner, content in [('default', '# 根账号知识'), (aid, '# 第二账号知识')]:
+            response = await self.req('PUT', '/api/ai/flock/knowledge', owner, json={'content': content})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual((await self.req('GET', '/api/ai/flock/knowledge', owner)).json()['content'], content)
+            exported = await self.req('GET', '/api/ai/flock/knowledge/export', owner)
+            self.assertEqual(exported.text, content)
+            self.assertIn('knowledge.md', exported.headers['content-disposition'])
+            self.assertEqual(self.rt(owner).knowledge_file.stat().st_mode & 0o777, 0o600)
+        response = await self.req('POST', '/api/ai/flock/knowledge/import', aid, content='# 导入知识'.encode())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((await self.req('GET', '/api/ai/flock/knowledge', 'default')).json()['content'], '# 根账号知识')
+        self.assertEqual((await self.req('POST', '/api/ai/flock/knowledge/import', aid, content=b'\xff')).status_code, 400)
+        self.http.cookies.clear()
+        for method, route in [('GET', ''), ('PUT', ''), ('POST', '/import'), ('GET', '/export'), ('POST', '/upload-now')]:
+            self.assertEqual((await self.req(method, '/api/ai/flock/knowledge' + route, aid, json={'content': 'x'})).status_code, 401)
+
+    async def test_study_routes_are_authenticated_and_account_isolated(self):
+        aid = await self.create()
+        for owner, content in [('default', '# 根账号群氛围'), (aid, '# 第二账号群知识')]:
+            response = await self.req('PUT', '/api/ai/flock/study', owner, json={'content': content})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual((await self.req('GET', '/api/ai/flock/study', owner)).json()['content'], content)
+            exported = await self.req('GET', '/api/ai/flock/study/export', owner)
+            self.assertEqual(exported.text, content)
+            self.assertIn('study.md', exported.headers['content-disposition'])
+            self.assertEqual(self.rt(owner).study_file.stat().st_mode & 0o777, 0o600)
+        response = await self.req('POST', '/api/ai/flock/study/import', aid, content='# 导入群知识'.encode())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((await self.req('GET', '/api/ai/flock/study', 'default')).json()['content'], '# 根账号群氛围')
+        self.http.cookies.clear()
+        for method, route in [('GET', ''), ('PUT', ''), ('POST', '/import'), ('GET', '/export')]:
+            self.assertEqual((await self.req(method, '/api/ai/flock/study' + route, aid, json={'content': 'x'})).status_code, 401)
+
+    async def test_owner_settings_memory_and_traces_are_account_scoped(self):
+        aid = await self.create()
+        root_settings = {'flock_correction_enabled': 1, 'flock_correction_keywords': '改正',
+                         'flock_owner_pause_enabled': 1, 'flock_daily_total_tokens': 1234,
+                         'flock_summary_unlimited': 1}
+        response = await self.req('PUT', '/api/ai/flock/owner-settings', 'default', json=root_settings)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((await self.req('GET', '/api/ai/flock/owner-settings', aid)).json()['settings']['flock_correction_enabled'], '0')
+        self.assertEqual((await self.req('GET', '/api/ai/flock/owner-settings', aid)).json()['settings']['flock_summary_unlimited'], '0')
+        self.assertEqual((await self.req('GET', '/api/ai/flock/owner-settings', 'default')).json()['settings']['flock_summary_unlimited'], '1')
+        self.assertEqual((await self.req('PUT', '/api/ai/flock/owner-settings', 'default', json={'flock_owner_pause_minutes': 5})).status_code, 200)
+        self.assertEqual((await self.req('GET', '/api/ai/flock/owner-settings', 'default')).json()['settings']['flock_summary_unlimited'], '1')
+        self.assertEqual((await self.req('PUT', '/api/ai/flock/owner-settings', 'default', json={'flock_summary_unlimited': 2})).status_code, 422)
+        self.assertEqual((await self.req('PUT', '/api/ai/flock/owner-settings', 'default', json={'flock_summary_unlimited': 0})).status_code, 200)
+        self.assertEqual((await self.req('GET', '/api/ai/flock/owner-settings', 'default')).json()['settings']['flock_summary_unlimited'], '0')
+        for owner, content in [('default', '根账号记忆'), (aid, '小号记忆')]:
+            self.assertEqual((await self.req('PUT', '/api/ai/flock/study', owner, json={'content': content})).status_code, 200)
+            listed = (await self.req('GET', '/api/ai/flock/memory?file=study', owner)).json()
+            self.assertEqual(listed['items'][0]['body'], content)
+        self.rt().db.execute("INSERT INTO ai_flock_traces VALUES(77,?)", ('{"references":{"study":"private"}}',))
+        self.rt().db.commit()
+        self.assertEqual((await self.req('GET', '/api/ai/flock/traces/77', aid)).status_code, 404)
+        self.assertEqual((await self.req('GET', '/api/ai/flock/traces/77', 'default')).status_code, 200)
+        self.http.cookies.clear()
+        for route in ('/api/ai/flock/owner-settings', '/api/ai/flock/memory', '/api/ai/flock/traces/77'):
+            self.assertEqual((await self.req('GET', route, aid)).status_code, 401)
+
+    async def test_manual_flock_test_route_is_authenticated_and_account_scoped(self):
+        aid = await self.create()
+        provider = await self.req('POST', '/api/ai/providers', 'default', json={
+            'note': '测试', 'base': 'https://example.invalid/v1', 'key': 'offline-test-key', 'model': 'm'})
+        provider_id = provider.json()['provider']['id']
+        for owner, group in [('default', '-1001'), (aid, '-1002')]:
+            await self.req('POST', '/api/groups', owner, json={'chat_id': group, 'name': '测试群'})
+            created = await self.req('POST', '/api/ai/flock/jobs', owner, json={
+                'name': '测试', 'enabled': 0, 'groups': group, 'prompt': '口语', 'provider_ids': provider_id})
+            self.assertEqual(created.status_code, 200, created.text)
+            self.assertEqual(created.json()['id'], 1)
+            self.rt(owner).client = SimpleNamespace(get_messages=AsyncMock(return_value=[]),
+                send_message=AsyncMock(return_value=SimpleNamespace(id=300, chat_id=int(group))),
+                disconnect=AsyncMock())
+            self.rt(owner).tg_state.update(phase='ready')
+        self.main._call_ai_any = AsyncMock(return_value='这是模型生成的问候')
+        route = '/api/ai/flock/jobs/1/test'
+        for body in ({'chat_id': '-1001', 'text': '测试'}, {'chat_id': '@someone', 'text': '测试'},
+                     {'chat_id': '-1002', 'text': ' '}, {'chat_id': '-1002', 'text': 'x' * 2001}):
+            response = await self.req('POST', route, aid, json=body)
+            self.assertIn(response.status_code, (400, 422), response.text)
+        self.main._call_ai_any.assert_not_awaited()
+        response = await self.req('POST', route, aid, json={'chat_id': '-1002', 'text': '打个招呼'})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()['queued'])
+        await self.rt(aid).ai_flock_tests['1']['_task']
+        status = await self.req('GET', '/api/ai/flock/jobs/1/test-status', aid)
+        self.assertTrue(status.json()['sent'])
+        self.assertFalse((await self.req('GET', '/api/ai/flock/jobs/1/test-status', 'default')).json()['running'])
+        self.rt(aid).client.send_message.assert_awaited_once_with(-1002, '这是模型生成的问候', parse_mode=None)
+        self.rt().client.send_message.assert_not_awaited()
+        self.http.cookies.clear()
+        self.assertEqual((await self.req('POST', route, 'default', json={'chat_id': '-1001', 'text': '打招呼'})).status_code, 401)
+
+    async def test_delete_shared_ai_provider_cleans_references_in_every_account(self):
+        aid = await self.create()
+        provider = await self.req('POST', '/api/ai/providers', 'default', json={
+            'note': '待删除', 'base': 'https://example.invalid/v1', 'key': 'offline-test-key', 'model': 'm'})
+        provider_id = provider.json()['provider']['id']
+        for owner, group in [('default', '-1001'), (aid, '-1002')]:
+            await self.req('POST', '/api/groups', owner, json={'chat_id': group, 'name': '测试群'})
+            created = await self.req('POST', '/api/ai/flock/jobs', owner, json={
+                'name': '引用任务', 'enabled': 1, 'groups': group, 'prompt': '聊天', 'provider_ids': provider_id})
+            self.assertEqual(created.status_code, 200, created.text)
+        deleted = await self.req('DELETE', '/api/ai/providers/' + provider_id, aid)
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()['affected_references'], 2)
+        for owner in ('default', aid):
+            row = self.rt(owner).db.execute('SELECT provider_ids,enabled FROM ai_flock_jobs').fetchone()
+            self.assertEqual(tuple(row), ('', 0))
+        self.assertEqual((await self.req('GET', '/api/ai/providers', 'default')).json()['providers'], [])
+
     async def test_parallel_clients_login_codes_and_two_factor(self):
         aid = await self.create()
         await asyncio.gather(self.login('default', 123, '00000000001', '00001'),
@@ -218,8 +334,8 @@ class AccountsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.client.signins, [('00000000002', '00002', None)])
         self.assertNotEqual(first.client.session, second.client.session)
         self.assertGreaterEqual(FakeTelegramClient.max_simultaneous, 2)
-        self.assertEqual(len(first.client.handlers), 4)
-        self.assertEqual(len(second.client.handlers), 4)
+        self.assertEqual(len(first.client.handlers), 5)
+        self.assertEqual(len(second.client.handlers), 5)
         self.assertTrue(first.watcher_task is not second.watcher_task)
         self.assertTrue(first.health_task is not second.health_task)
         self.assertEqual((Path(second.session_path + '.session')).stat().st_mode & 0o777, 0o600)
@@ -264,6 +380,34 @@ class AccountsTest(unittest.IsolatedAsyncioTestCase):
         await self.req('POST', '/api/logs/clear', aid, json={})
         self.assertTrue((await self.req('GET', '/api/logs', 'default')).json()['hits'])
         self.assertFalse((await self.req('GET', '/api/logs', aid)).json()['hits'])
+
+    async def test_logs_pagination_export_and_ai_usage_are_account_scoped(self):
+        aid = await self.create()
+        with use_runtime(self.rt(aid)):
+            for i in range(3):
+                self.main.add_hit('signin', True, chat_id='@x', content='hit-'+str(i), detail={'task': 't'})
+            self.main._record_ai_usage('0123456789abcdef', {'prompt_tokens': 5, 'completion_tokens': 2}, 'ai_flock')
+        page = (await self.req('GET', '/api/logs?n=2', aid)).json()
+        self.assertEqual((len(page['hits']), page['has_more']), (2, True))
+        older = (await self.req('GET', '/api/logs?n=2&before=' + str(page['hits'][-1]['id']), aid)).json()
+        self.assertEqual((len(older['hits']), older['has_more']), (1, False))
+        exported = await self.req('GET', '/api/logs/export?kind=signin', aid)
+        self.assertEqual(exported.status_code, 200)
+        self.assertIn('text/csv', exported.headers['content-type'])
+        self.assertIn('hit-0', exported.text)
+        usage = (await self.req('GET', '/api/ai/usage?days=14', aid)).json()
+        self.assertEqual(usage['features'][0]['input_tokens'], 5)
+        empty = (await self.req('GET', '/api/ai/usage?days=14', 'default')).json()
+        self.assertEqual(empty['features'], [])
+
+    async def test_learning_status_is_account_local(self):
+        aid=await self.create()
+        with use_runtime(self.rt()):
+            self.main.set_setting('flock_learning_last_status','error');self.main.set_setting('flock_learning_last_error','default-error')
+        with use_runtime(self.rt(aid)):
+            self.main.set_setting('flock_learning_last_status','success');self.main.set_setting('flock_learning_last_error','')
+        first=(await self.req('GET','/api/ai/flock/skill','default')).json();second=(await self.req('GET','/api/ai/flock/skill',aid)).json()
+        self.assertEqual((first['learning_state'],first['flock_learning_last_error']),('error','default-error'));self.assertEqual((second['learning_state'],second['flock_learning_last_error']),('disabled',''))
 
     async def test_event_callbacks_bind_explicit_owner(self):
         aid = await self.create()
@@ -468,6 +612,8 @@ class AccountsTest(unittest.IsolatedAsyncioTestCase):
         # media-only message. No Telegram/client network operation is performed.
         for replies, expected in [([], False), ([SimpleNamespace(id=90, out=False, raw_text='old')], False),
                                   ([SimpleNamespace(id=101, out=False, raw_text='')], True)]:
+            runtime.db.execute("DELETE FROM workflow_checkpoints WHERE task_id=1")
+            runtime.db.commit()
             runtime.client.get_messages = AsyncMock(side_effect=[[], replies])
             with patch.object(self.main.time, 'monotonic', side_effect=[0, 0, 0, 0, 2]), \
                  patch.object(asyncio, 'sleep', new=AsyncMock()):
@@ -480,6 +626,9 @@ class AccountsTest(unittest.IsolatedAsyncioTestCase):
     async def test_click_until_excludes_menu_but_accepts_current_edit(self):
         runtime = self.rt()
         for edit, expected in [(False, False), (True, True)]:
+            # Each case starts a new execution; recovery is covered separately.
+            runtime.db.execute("DELETE FROM workflow_checkpoints WHERE task_id=1")
+            runtime.db.commit()
             button = SimpleNamespace(text='continue', click=AsyncMock())
             menu = SimpleNamespace(id=110, out=False, raw_text='welcome', edit_date=None, photo=None,
                                    get_buttons=AsyncMock(return_value=[[button]]))

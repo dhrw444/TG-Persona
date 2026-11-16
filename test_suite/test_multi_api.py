@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import site
 import tempfile
 import unittest
 
@@ -15,6 +16,8 @@ class MultiAccountAPITests(unittest.TestCase):
     def test_accounts_and_task_config_are_isolated(self):
         with tempfile.TemporaryDirectory(prefix='multi-api-env-') as home:
             env={'PATH':os.environ.get('PATH','/usr/bin:/bin'),'HOME':home,
+                 # 子进程 HOME 指到临时目录后用户级 site-packages 会失效，显式补回。
+                 'PYTHONPATH':os.environ.get('PYTHONPATH','')+':'+site.getusersitepackages(),
                  'LD_LIBRARY_PATH':str(Path(sys.executable).resolve().parent.parent/'lib'),
                  'PANEL_PASSWORD':'Panel-fixture-password-123','TRUSTED_PROXIES':''}
             result=subprocess.run([sys.executable,str(Path(__file__).resolve()),'--probe'],env=env,
@@ -34,7 +37,7 @@ def probe():
     from fastapi.testclient import TestClient
     with tempfile.TemporaryDirectory(prefix='tg-multi-api-') as tmp:
         base=Path(tmp)
-        required=('main.py','updater.py','VERSION','account_runtime.py','task_management.py','icon_library.py','ai_assistant.py','data_migration.py','custom_workflow.py')
+        required=('main.py','updater.py','VERSION','account_runtime.py','task_management.py','icon_library.py','ai_assistant.py','data_migration.py','custom_workflow.py','persona_store.py','persona_features.py','knowledge.md')
         for name in required:
             source=ROOT/name
             if not source.exists():raise AssertionError('新增模块尚未完成：'+name)

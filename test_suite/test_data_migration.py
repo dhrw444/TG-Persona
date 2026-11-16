@@ -44,14 +44,42 @@ class DataMigrationTests(unittest.TestCase):
         self.assertFalse(migration._allowed('../data/config.db'));self.assertFalse(migration._allowed('data/accounts/bad/config.db'))
         shutil.rmtree(export_work);shutil.rmtree(stage)
 
-    def test_skill_one_mib_migration_boundary(self):
+    def test_skill_five_mib_migration_boundary(self):
         skill=self.data/'skill.md';skill.write_bytes(b'A'*migration.SKILL_MAX_BYTES)
         package,work=migration.create_package(self.base,self.data,[self.aid],'1.16.1','backup-password')
         _,_,stage=migration.stage_package(self.base,package,'backup-password','1.16.1')
         self.assertEqual((stage/'new/data/skill.md').stat().st_size,migration.SKILL_MAX_BYTES)
         shutil.rmtree(work);shutil.rmtree(stage)
         skill.write_bytes(b'A'*(migration.SKILL_MAX_BYTES+1))
-        with self.assertRaisesRegex(ValueError,'1MiB'):migration.create_package(self.base,self.data,[self.aid],'1.16.1','backup-password')
+        with self.assertRaisesRegex(ValueError,'5MiB'):migration.create_package(self.base,self.data,[self.aid],'1.16.1','backup-password')
+
+    def test_knowledge_migration_preserves_default_and_per_account_override(self):
+        (self.base/'knowledge.md').write_text('# 内置知识',encoding='utf-8')
+        knowledge=self.data/'accounts'/self.aid/'knowledge.md';knowledge.write_text('# 手动知识',encoding='utf-8')
+        (self.data/'study.md').write_text('# 根账号学习',encoding='utf-8')
+        (self.data/'accounts'/self.aid/'study.md').write_text('# 小号群氛围',encoding='utf-8')
+        package,work=migration.create_package(self.base,self.data,[self.aid],'1.19.4','backup-password')
+        _,_,stage=migration.stage_package(self.base,package,'backup-password','1.19.4')
+        self.assertEqual((stage/'new/data/knowledge.md').read_text(),'# 内置知识')
+        self.assertEqual((stage/'new/data/accounts'/self.aid/'knowledge.md').read_text(),'# 手动知识')
+        self.assertEqual((stage/'new/data/study.md').read_text(),'# 根账号学习')
+        self.assertEqual((stage/'new/data/accounts'/self.aid/'study.md').read_text(),'# 小号群氛围')
+        self.assertEqual((stage/'new/data/knowledge.md').stat().st_mode&0o777,0o600)
+        shutil.rmtree(work);shutil.rmtree(stage)
+        knowledge.write_bytes(b'A'*(migration.SKILL_MAX_BYTES+1))
+        with self.assertRaisesRegex(ValueError,'knowledge.md'):migration.create_package(self.base,self.data,[self.aid],'1.19.4','backup-password')
+
+    def test_auto_knowledge_round_trip_for_default_and_secondary_account(self):
+        for directory, text in ((self.data, '默认账号自动知识'), (self.data/'accounts'/self.aid, '小号自动知识')):
+            (directory/'knowledge-auto.md').write_text(text, encoding='utf-8')
+        package, work = migration.create_package(self.base,self.data,[self.aid],'1.27.30','backup-password')
+        _, _, stage = migration.stage_package(self.base,package,'backup-password','1.27.30')
+        self.assertEqual((stage/'new/data/knowledge-auto.md').read_text(encoding='utf-8'), '默认账号自动知识')
+        self.assertEqual((stage/'new/data/accounts'/self.aid/'knowledge-auto.md').read_text(encoding='utf-8'), '小号自动知识')
+        shutil.rmtree(work); shutil.rmtree(stage)
+        (self.data/'knowledge-auto.md').write_bytes(b'A'*(migration.SKILL_MAX_BYTES+1))
+        with self.assertRaisesRegex(ValueError,'knowledge-auto.md'):
+            migration.create_package(self.base,self.data,[self.aid],'1.27.30','backup-password')
 
     def test_startup_swap_success_and_failed_boot_rollback(self):
         package,export_work=migration.create_package(self.base,self.data,[self.aid],'1.16.1','backup-password')
